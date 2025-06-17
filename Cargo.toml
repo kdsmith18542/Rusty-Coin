@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "rusty-coin-core",
+    "rusty-coin-node",
+]
+
+[workspace.dependencies]
+libp2p = "0.55.0"
+hickory-proto = "0.25.2"
+hickory-resolver = "0.25.2"
+
+[profile.dev]
+opt-level = 1
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3

@@ -1,0 +1,62 @@
+[package]
+name = "rusty-coin-node"
+version = "0.1.0"
+edition = "2021"
+description = "Rusty Coin full node implementation"
+license = "MIT OR Apache-2.0"
+authors = ["Rusty Coin Developers"]
+repository = "https://github.com/rusty-coin/rusty-coin"
+
+[dependencies]
+# Local crates
+rusty-coin-core = { path = "../rusty-coin-core" }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+console = "0.15"
+indicatif = "0.17"
+
+# Networking
+tokio = { version = "1.45.1", features = ["full"] }
+tower = "0.4"
+tonic = "0.8"
+prost = "0.11"
+prost-types = "0.11"
+
+# Storage
+# rocksdb = { version = "0.22", features = ["lz4"] } # Temporarily commented out due to compilation issues
+
+# Logging
+env_logger = "0.10"
+log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Configuration
+config = "0.13"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.7"
+serde_json = "1.0"
+
+# P2P Networking
+libp2p = { version = "0.55.0", features = [
+    "autonat",
+    "dcutr",
+    "identify",
+    "kad",
+    "mdns",
+    "noise",
+    "ping",
+    "relay",
+    "rendezvous",
+    "tcp",
+    "upnp",
+    "yamux",
+    "tokio"
+]}
+libp2p-swarm-derive = "0.26.0"
+futures = "0.3"
+
+[build-dependencies]
+prost-build = "0.11"
+tonic-build = "0.8"

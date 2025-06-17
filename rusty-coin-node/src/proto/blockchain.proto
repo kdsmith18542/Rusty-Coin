@@ -1,0 +1,69 @@
+syntax = "proto3";
+
+package rustcoin;
+
+// Represents a cryptographic hash (e.g., BLAKE3 output)
+message Hash {
+  bytes data = 1;
+}
+
+// Represents an Ed25519 public key
+message PublicKey {
+  bytes data = 1;
+}
+
+// Represents an Ed25519 signature
+message Signature {
+  bytes data = 1;
+}
+
+// Represents a transaction in the Rusty Coin blockchain
+message Transaction {
+  Hash id = 1;
+  repeated string inputs = 2; // Placeholder for transaction inputs (e.g., UTXO references)
+  repeated string outputs = 3; // Placeholder for transaction outputs (e.g., recipient addresses and amounts)
+  Signature signature = 4;
+  PublicKey public_key = 5;
+  uint64 timestamp = 6;
+  // Add more fields as per the detailed transaction structure in the future
+}
+
+// Represents a block in the Rusty Coin blockchain
+message Block {
+  Hash header_hash = 1;
+  uint64 height = 2;
+  Hash prev_block_hash = 3;
+  uint64 timestamp = 4;
+  uint32 nonce = 5;
+  Hash merkle_root = 6;
+  repeated Transaction transactions = 7;
+  // Add more fields as per the detailed block structure in the future
+}
+
+// Request to get a block by its hash
+message GetBlockRequest {
+  Hash block_hash = 1;
+}
+
+// Response containing a block
+message GetBlockResponse {
+  Block block = 1;
+}
+
+// Request to send a transaction
+message SendTransactionRequest {
+  Transaction transaction = 1;
+}
+
+// Response for sending a transaction
+message SendTransactionResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// Service for peer-to-peer communication in the Rusty Coin network
+service Node {
+  rpc GetBlock(GetBlockRequest) returns (GetBlockResponse);
+  rpc SendTransaction(SendTransactionRequest) returns (SendTransactionResponse);
+  // Add more RPCs as needed for P2P communication (e.g., GetHeaders, GetMempool)
+} 
