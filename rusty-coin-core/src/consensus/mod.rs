@@ -171,7 +171,6 @@ pub fn validate_block(
 mod tests {
     use super::*;
     use crate::crypto::Hash;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn create_test_header(timestamp: u64, bits: u32) -> BlockHeader {
         BlockHeader {

@@ -1,74 +1,56 @@
-use tonic::{transport::Server, Request, Response, Status};
+use rusty_coin_core::types::{Block, BlockHeader};
+use rusty_coin_core::crypto::Hash;
+use tonic::{Request, Response, Status};
+use serde_json;
 
 mod proto {
-    include!(concat!(env!("OUT_DIR"), "/rustcoin.rs"));
+    tonic::include_proto!("rustcoin");
 }
 
-mod network; // Declare the new network module
-
-use proto::{
-    node_server::{Node, NodeServer},
-    Block, GetBlockRequest, GetBlockResponse, Hash, PublicKey, SendTransactionRequest,
-    SendTransactionResponse, Signature, Transaction,
-};
+// mod network;  // Temporarily disabled
 
 #[derive(Debug, Default)]
 pub struct RustyCoinNode;
 
 #[tonic::async_trait]
-impl Node for RustyCoinNode {
+impl proto::node_server::Node for RustyCoinNode {
     async fn get_block(
         &self,
-        request: Request<GetBlockRequest>,
-    ) -> Result<Response<GetBlockResponse>, Status> {
-        println!("Got a GetBlockRequest: {:?}", request);
-
-        let reply = GetBlockResponse {
-            block: Some(Block {
-                header_hash: Some(Hash { data: vec![0u8; 32] }),
-                height: 1,
-                prev_block_hash: None,
-                timestamp: 0,
-                nonce: 0,
-                merkle_root: Some(Hash { data: vec![0u8; 32] }),
-                transactions: vec![],
-            }),
-        };
-        Ok(Response::new(reply))
+        _request: Request<proto::GetBlockRequest>,
+    ) -> Result<Response<proto::GetBlockResponse>, Status> {
+        // Create a default block header
+        let header = BlockHeader::new(
+            1, // version
+            Hash::default(), // prev_block_hash
+            Hash::default(), // merkle_root
+            0, // bits
+            Hash::default(), // ticket_hash
+        );
+        let block = Block::new(header, vec![]);
+        
+        // Serialize using serde_json temporarily
+        let block_json = serde_json::to_vec(&block).map_err(|e| {
+            Status::internal(format!("Failed to serialize block: {}", e))
+        })?;
+        
+        Ok(Response::new(proto::GetBlockResponse {
+            block: block_json,
+        }))
     }
 
     async fn send_transaction(
         &self,
-        request: Request<SendTransactionRequest>,
-    ) -> Result<Response<SendTransactionResponse>, Status> {
-        println!("Got a SendTransactionRequest: {:?}", request);
-
-        let reply = SendTransactionResponse {
-            success: true,
-            message: "Transaction received successfully!".to_string(),
-        };
-        Ok(Response::new(reply))
+        _request: Request<proto::SendTransactionRequest>,
+    ) -> Result<Response<proto::SendTransactionResponse>, Status> {
+        Ok(Response::new(proto::SendTransactionResponse {
+            accepted: true,
+        }))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Start the gRPC server
-    let grpc_addr = "[::1]:50051".parse().map_err(|e| e.into())?;
-    let grpc_node = RustyCoinNode::default();
-
-    let grpc_server_handle = tokio::spawn(async move {
-        println!("RustyCoinNode gRPC server listening on {}", grpc_addr);
-        Server::builder()
-            .add_service(NodeServer::new(grpc_node))
-            .serve(grpc_addr)
-            .await
-            .map_err(|e| e.into())
-    });
-
-    // Start the libp2p node
-    println!("Starting libp2p node...");
-    network::start_p2p_node().await?;
-
-    grpc_server_handle.await?.map_err(|e| e.into())
+    env_logger::init();
+    // network::start_network().await?;  // Temporarily disabled
+    Ok(())
 }
