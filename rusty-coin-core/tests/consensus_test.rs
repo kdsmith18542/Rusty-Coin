@@ -13,6 +13,9 @@ fn create_test_header(timestamp: u64, bits: u32) -> BlockHeader {
         bits,
         nonce: 0,
         ticket_hash: Hash::zero(),
+        cumulative_work: 0,
+        height: 0,
+        pos_votes: Vec::new(),
     }
 }
 

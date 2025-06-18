@@ -5,6 +5,8 @@ package rustcoin;
 service Node {
   rpc GetBlock(GetBlockRequest) returns (GetBlockResponse);
   rpc SendTransaction(SendTransactionRequest) returns (SendTransactionResponse);
+  rpc SendPoSeChallenge(PoSeChallenge) returns (PoSeResponse);
+  rpc SendPoSeResponse(PoSeResponse) returns (PoSeResponseAcknowledgement);
 }
 
 message Hash {
@@ -29,4 +31,21 @@ message SendTransactionRequest {
 
 message SendTransactionResponse {
   bool accepted = 1;
+}
+
+message PoSeChallenge {
+  string challenge_id = 1;
+  bytes masternode_public_key = 2;
+  bytes challenge_data = 3;
+}
+
+message PoSeResponse {
+  string challenge_id = 1;
+  bytes masternode_public_key = 2;
+  bytes signature = 3;
+}
+
+message PoSeResponseAcknowledgement {
+  string challenge_id = 1;
+  bool accepted = 2;
 }

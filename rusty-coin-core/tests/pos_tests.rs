@@ -14,6 +14,9 @@ fn create_test_block() -> Block {
             bits: 0,
             nonce: 0,
             ticket_hash: Hash::zero(),
+            cumulative_work: 0,
+            height: 0,
+            pos_votes: Vec::new(),
         },
         transactions: vec![],
     }
@@ -44,6 +47,7 @@ fn test_quorum_selection() {
         max_ticket_age: 100,
         min_stake: 1000,
         quorum_size: 5,
+        min_pos_votes: 3,
     };
     
     let quorum = select_quorum(&tickets, &Hash::zero(), 10, &params).unwrap();
