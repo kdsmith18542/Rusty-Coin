@@ -1,0 +1,60 @@
+warning: C:\Users\Keith\Rusty-Coin\Cargo.toml: `panic` setting is ignored for `bench` profile
+   Compiling rusty-types v0.1.0 (C:\Users\Keith\Rusty-Coin\rusty-types\rusty-types)
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+ --> rusty-types\rusty-types\src\transaction.rs:2:5
+  |
+2 | use rusty_core::types::{TxInput, TxOutput};
+  |     ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+  |
+  = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+  --> rusty-types\rusty-types\src\transaction.rs:33:30
+   |
+33 |     pub collateral_outpoint: rusty_core::types::OutPoint,
+   |                              ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+   |
+   = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+  --> rusty-types\rusty-types\src\transaction.rs:34:42
+   |
+34 |     pub collateral_ownership_public_key: rusty_core::crypto::signature::PublicKey,
+   |                                          ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+   |
+   = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+  --> rusty-types\rusty-types\src\transaction.rs:35:38
+   |
+35 |     pub masternode_owner_public_key: rusty_core::crypto::signature::PublicKey,
+   |                                      ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+   |
+   = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+  --> rusty-types\rusty-types\src\transaction.rs:36:41
+   |
+36 |     pub masternode_operator_public_key: rusty_core::crypto::signature::PublicKey,
+   |                                         ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+   |
+   = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+  --> rusty-types\rusty-types\src\transaction.rs:44:20
+   |
+44 |     pub signature: rusty_core::crypto::signature::Signature,
+   |                    ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+   |
+   = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+error[E0433]: failed to resolve: use of unresolved module or unlinked crate `rusty_core`
+  --> rusty-types\rusty-types\src\transaction.rs:58:29
+   |
+58 | pub struct MasternodeID(pub rusty_core::types::Hash);
+   |                             ^^^^^^^^^^ use of unresolved module or unlinked crate `rusty_core`
+   |
+   = help: if you wanted to use a crate named `rusty_core`, use `cargo add rusty_core` to add it to your `Cargo.toml`
+
+For more information about this error, try `rustc --explain E0433`.
+error: could not compile `rusty-types` (lib) due to 7 previous errors

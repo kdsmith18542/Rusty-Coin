@@ -1,0 +1,4 @@
+error: no such command: `why-build-depends`
+
+help: view all installed commands with `cargo --list`
+help: find a package to install `why-build-depends` with `cargo search cargo-why-build-depends`

@@ -1,0 +1,12 @@
+[package]
+name = "rusty-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0.130", features = ["derive"] }
+thiserror = "1.0"
+
+bincode = "1.3.3"
+blake3 = "1.3.3"
+rusty-shared-types = { path = "../rusty-shared-types" }

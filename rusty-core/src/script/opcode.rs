@@ -1,0 +1,241 @@
+// rusty-core/src/script/opcode.rs
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Opcode {
+    // Constants
+    Op0 = 0x00,
+    OpPushdata1 = 0x4C,
+    OpPushdata2 = 0x4D,
+    OpPushdata4 = 0x4E,
+    Op1 = 0x51,
+    Op2 = 0x52,
+    Op3 = 0x53,
+    Op4 = 0x54,
+    Op5 = 0x55,
+    Op6 = 0x56,
+    Op7 = 0x57,
+    Op8 = 0x58,
+    Op9 = 0x59,
+    Op10 = 0x5A,
+    Op11 = 0x5B,
+    Op12 = 0x5c,
+    Op13 = 0x5D,
+    Op14 = 0x5E,
+    Op15 = 0x5F,
+    Op16 = 0x60,
+
+    // Flow control
+    OpNop = 0x61,
+    OpIf = 0x63,
+    OpNotIf = 0x64,
+    OpElse = 0x67,
+    OpEndIf = 0x68,
+    OpVerify = 0x69,
+    OpReturn = 0x6A,
+    OpToAltStack = 0x6B,
+    OpFromAltStack = 0x6C,
+    OpIfDup = 0x73,
+    OpDepth = 0x74,
+    OpDrop = 0x75,
+    OpDup = 0x76,
+    OpNip = 0x77,
+    OpOver = 0x78,
+    OpPick = 0x79,
+    OpRoll = 0x7A,
+    OpRot = 0x7B,
+    OpSwap = 0x7C,
+    OpTuck = 0x7D,
+    Op2Drop = 0x6D,
+    Op2Dup = 0x6E,
+    Op3Dup = 0x6F,
+    Op2Over = 0x70,
+    Op2Rot = 0x71,
+    Op2Swap = 0x72,
+    
+    // String operations
+    OpCat = 0x7E,
+    OpSubStr = 0x7F,
+    OpLeft = 0x80,
+    OpRight = 0x81,
+    OpSize = 0x82,
+    
+    // Bitwise logic
+    OpInvert = 0x83,
+    OpAnd = 0x84,
+    OpOr = 0x85,
+    OpXor = 0x86,
+    OpEqual = 0x87,
+    OpEqualverify = 0x88,
+    
+    // Arithmetic
+    Op1Add = 0x8B,
+    Op1Sub = 0x8C,
+    Op2Mul = 0x8D,
+    Op2Div = 0x8E,
+    OpNegate = 0x8F,
+    OpAbs = 0x90,
+    OpNot = 0x91,
+    Op0NotEqual = 0x92,
+    OpAdd = 0x93,
+    OpSub = 0x94,
+    OpMul = 0x95,
+    OpDiv = 0x96,
+    OpMod = 0x97,
+    OpLShift = 0x98,
+    OpRShift = 0x99,
+    OpBoolAnd = 0x9A,
+    OpBoolOr = 0x9B,
+    OpNumEqual = 0x9C,
+    OpNumEqualVerify = 0x9D,
+    OpNumNotEqual = 0x9E,
+    OpLessThan = 0x9F,
+    OpGreaterThan = 0xA0,
+    OpLessThanOrEqual = 0xA1,
+    OpGreaterThanOrEqual = 0xA2,
+    OpMin = 0xA3,
+    OpMax = 0xA4,
+    OpWithin = 0xA5,
+    
+    // Cryptography
+    OpRipemd160 = 0xA6,
+    OpSha1 = 0xA7,
+    OpSha256 = 0xA8,
+    OpHash160 = 0xA9,
+    OpHash256 = 0xAA,
+    OpCodeSeparator = 0xAB,
+    OpCheckSig = 0xAC,
+    OpCheckSigVerify = 0xAD,
+    OpCheckMultiSig = 0xAE,
+    OpCheckMultiSigVerify = 0xAF,
+    
+    // Locktime
+    OpCheckLockTimeVerify = 0xB1,
+    OpCheckSequenceVerify = 0xB2,
+    
+    // Pseudo-words (for internal use)
+    OpInvalidOpcode = 0xFF,
+}
+
+impl From<u8> for Opcode {
+    fn from(byte: u8) -> Self {
+        match byte {
+            // Constants
+            0x00 => Opcode::Op0,
+            0x4C => Opcode::OpPushdata1,
+            0x4D => Opcode::OpPushdata2,
+            0x4E => Opcode::OpPushdata4,
+            0x51 => Opcode::Op1,
+            0x52 => Opcode::Op2,
+            0x53 => Opcode::Op3,
+            0x54 => Opcode::Op4,
+            0x55 => Opcode::Op5,
+            0x56 => Opcode::Op6,
+            0x57 => Opcode::Op7,
+            0x58 => Opcode::Op8,
+            0x59 => Opcode::Op9,
+            0x5A => Opcode::Op10,
+            0x5B => Opcode::Op11,
+            0x5c => Opcode::Op12,
+            0x5D => Opcode::Op13,
+            0x5E => Opcode::Op14,
+            0x5F => Opcode::Op15,
+            0x60 => Opcode::Op16,
+            
+            // Flow control
+            0x61 => Opcode::OpNop,
+            0x63 => Opcode::OpIf,
+            0x64 => Opcode::OpNotIf,
+            0x67 => Opcode::OpElse,
+            0x68 => Opcode::OpEndIf,
+            0x69 => Opcode::OpVerify,
+            0x6A => Opcode::OpReturn,
+            0x6B => Opcode::OpToAltStack,
+            0x6C => Opcode::OpFromAltStack,
+            0x73 => Opcode::OpIfDup,
+            0x74 => Opcode::OpDepth,
+            0x75 => Opcode::OpDrop,
+            0x76 => Opcode::OpDup,
+            0x77 => Opcode::OpNip,
+            0x78 => Opcode::OpOver,
+            0x79 => Opcode::OpPick,
+            0x7A => Opcode::OpRoll,
+            0x7B => Opcode::OpRot,
+            0x7C => Opcode::OpSwap,
+            0x7D => Opcode::OpTuck,
+            0x6D => Opcode::Op2Drop,
+            0x6E => Opcode::Op2Dup,
+            0x6F => Opcode::Op3Dup,
+            0x70 => Opcode::Op2Over,
+            0x71 => Opcode::Op2Rot,
+            0x72 => Opcode::Op2Swap,
+            
+            // String operations
+            0x7E => Opcode::OpCat,
+            0x7F => Opcode::OpSubStr,
+            0x80 => Opcode::OpLeft,
+            0x81 => Opcode::OpRight,
+            0x82 => Opcode::OpSize,
+            
+            // Bitwise logic
+            0x83 => Opcode::OpInvert,
+            0x84 => Opcode::OpAnd,
+            0x85 => Opcode::OpOr,
+            0x86 => Opcode::OpXor,
+            0x87 => Opcode::OpEqual,
+            0x88 => Opcode::OpEqualverify,
+            
+            // Arithmetic
+            0x8B => Opcode::Op1Add,
+            0x8C => Opcode::Op1Sub,
+            0x8D => Opcode::Op2Mul,
+            0x8E => Opcode::Op2Div,
+            0x8F => Opcode::OpNegate,
+            0x90 => Opcode::OpAbs,
+            0x91 => Opcode::OpNot,
+            0x92 => Opcode::Op0NotEqual,
+            0x93 => Opcode::OpAdd,
+            0x94 => Opcode::OpSub,
+            0x95 => Opcode::OpMul,
+            0x96 => Opcode::OpDiv,
+            0x97 => Opcode::OpMod,
+            0x98 => Opcode::OpLShift,
+            0x99 => Opcode::OpRShift,
+            0x9A => Opcode::OpBoolAnd,
+            0x9B => Opcode::OpBoolOr,
+            0x9C => Opcode::OpNumEqual,
+            0x9D => Opcode::OpNumEqualVerify,
+            0x9E => Opcode::OpNumNotEqual,
+            0x9F => Opcode::OpLessThan,
+            0xA0 => Opcode::OpGreaterThan,
+            0xA1 => Opcode::OpLessThanOrEqual,
+            0xA2 => Opcode::OpGreaterThanOrEqual,
+            0xA3 => Opcode::OpMin,
+            0xA4 => Opcode::OpMax,
+            0xA5 => Opcode::OpWithin,
+            
+            // Cryptography
+            0xA6 => Opcode::OpRipemd160,
+            0xA7 => Opcode::OpSha1,
+            0xA8 => Opcode::OpSha256,
+            0xA9 => Opcode::OpHash160,
+            0xAA => Opcode::OpHash256,
+            0xAB => Opcode::OpCodeSeparator,
+            0xAC => Opcode::OpCheckSig,
+            0xAD => Opcode::OpCheckSigVerify,
+            0xAE => Opcode::OpCheckMultiSig,
+            0xAF => Opcode::OpCheckMultiSigVerify,
+            
+            // Locktime
+            0xB1 => Opcode::OpCheckLockTimeVerify,
+            0xB2 => Opcode::OpCheckSequenceVerify,
+            
+            _ => Opcode::OpInvalidOpcode,
+        }
+    }
+}
+
+impl From<Opcode> for u8 {
+    fn from(opcode: Opcode) -> Self {
+        opcode as u8
+    }
+}

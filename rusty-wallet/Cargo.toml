@@ -1,0 +1,18 @@
+[package]
+name = "rusty-wallet"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bip39 = "2.2.0"
+hdpath = "0.4"
+secp256k1 = { version = "0.28.0", features = ["rand-std"] }
+hex = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+sha2 = "0.10"
+rusty-shared-types = { path = "../rusty-shared-types" }
+confy = "0.4"
+keyring = "2.0"
+ed25519-dalek = { version = "1.0.1", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["std"] }

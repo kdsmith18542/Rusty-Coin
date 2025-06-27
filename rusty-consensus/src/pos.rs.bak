@@ -1,0 +1,816 @@
+//! Proof of Stake (Ticket Voting) implementation for Rusty Coin.
+//!
+//! This module implements the TicketVoting system, a custom Proof of Stake algorithm
+//! that allows stakeholders to participate in block validation through a ticket-based system.
+
+use ed25519_dalek::{Signature, Verifier, SignatureError, VerifyingKey};
+use rusty_shared_types::{Block, ConsensusError, Ticket, TicketId, TicketVote, OutPoint, Hash, TxOutput, PublicKey, ConsensusParams, TransactionSignature, TicketState, masternode::MasternodeList, BlockHeader};
+use rusty_shared_types::masternode::{MasternodeMaliciousProof, SlashingReason, MaliciousActionType, MasternodeSlashTx, MasternodeNonParticipationProof, WitnessSignature, PoSeChallenge, MasternodeID};
+use std::collections::{HashMap, HashSet};
+use log::{info, warn};
+use zerocopy::IntoBytes;
+use blake3;
+use bincode;
+use rusty_core::constants::{POS_FINALITY_DEPTH, NON_PARTICIPATION_SLASH_PERCENTAGE};
+use rand::{SeedableRng, Rng};
+use rand_chacha::ChaCha8Rng;
+
+pub fn validate_ticket_signature(public_key_bytes: &PublicKey, message: &[u8], signature: &TransactionSignature) -> Result<bool, SignatureError> {
+    let public_key = VerifyingKey::from_bytes(public_key_bytes)?;
+    let signature = Signature::from_bytes(&signature.bytes);
+    
+    match public_key.verify(message, &signature) {
+        Ok(_) => Ok(true),
+        Err(e) => Err(e)
+    }
+}
+
+// 3.2.3 Live Tickets Pool
+#[derive(Debug, Clone, Default)]
+pub struct PosState {
+    pub tickets: HashMap<TicketId, Ticket>,
+    pub params: ConsensusParams,
+    pub last_price_adjustment_height: u64,
+}
+
+impl PosState {
+    pub fn new(params: ConsensusParams) -> Self {
+        PosState {
+            tickets: HashMap::new(),
+            params,
+            last_price_adjustment_height: 0,
+        }
+    }
+    
+    pub fn add_ticket(&mut self, ticket: Ticket) -> Result<(), ConsensusError> {
+        if ticket.value == 0 {
+            return Err(ConsensusError::InvalidTicket("ticket value cannot be zero".to_string()));
+        }
+        
+        self.tickets.insert(ticket.id.clone(), ticket);
+        
+        Ok(())
+    }
+    
+    pub fn remove_ticket(&mut self, ticket_id: &TicketId) -> Option<Ticket> {
+        self.tickets.remove(ticket_id)
+    }
+    
+    pub fn get_ticket(&self, ticket_id: &TicketId) -> Option<&Ticket> {
+        self.tickets.get(ticket_id)
+    }
+
+    pub fn slash_for_non_participation(&mut self, current_height: u64) {
+        let params = &self.params; // Immutable borrow for parameters
+        let mut slashed_ticket_ids = Vec::new();
+        for (_outpoint, ticket) in &self.tickets {
+            // A ticket is eligible for slashing if it's mature and has passed the grace period
+            if self.is_ticket_mature(ticket, current_height, params.ticket_maturity as u64) &&
+               ticket.purchase_block_height + params.grace_period_blocks as u64 <= current_height {
+                // In a real implementation, a slashing transaction would be created and broadcast here
+                // For now, we simply log and remove the ticket (representing burning/penalty)
+                slashed_ticket_ids.push(ticket.id.clone());
+                warn!("Ticket {:?} at height {} is eligible for slashing due to non-participation.", ticket.id, current_height);
+            }
+        }
+        for ticket_id in slashed_ticket_ids {
+            self.remove_ticket(&ticket_id);
+        }
+    }
+
+    pub fn update_ticket_status(&mut self, current_height: u64, _used_tickets: &HashSet<TicketId>) {
+        let params = &self.params; // Immutable borrow for parameters
+        let mut tickets_to_remove = Vec::new();
+        let mut tickets_to_update = Vec::new();
+
+        for (_outpoint, ticket) in &mut self.tickets {
+            if self.is_ticket_expired(ticket, current_height) {
+                tickets_to_remove.push(ticket.id.clone());
+            } else if ticket.state == TicketState::Pending && self.is_ticket_mature(ticket, current_height, params.ticket_maturity as u64) {
+                tickets_to_update.push(ticket.id.clone());
+            }
+        }
+
+        for ticket_id in tickets_to_remove {
+            self.remove_ticket(&ticket_id);
+        }
+
+        for ticket_id in tickets_to_update {
+            if let Some(ticket) = self.tickets.get_mut(&ticket_id) {
+                ticket.state = TicketState::Live;
+            }
+        }
+    }
+
+    pub fn distribute_rewards(&mut self, block: &Block) -> Result<(), ConsensusError> {
+        let mut rewarded_validators = HashSet::new(); 
+        let current_height = block.header.height; 
+        let params = &self.params; // Immutable borrow for parameters
+
+        let mut tickets_to_process = Vec::new();
+        for (_outpoint, ticket) in &self.tickets {
+            tickets_to_process.push(ticket.clone());
+        }
+
+        for ticket in tickets_to_process {
+            if !rewarded_validators.contains(&ticket.public_key) && !self.is_ticket_expired(&ticket, current_height) && self.is_ticket_mature(&ticket, current_height, params.ticket_maturity as u64) {
+                let reward = params.reward_amount * ticket.value;
+                info!("Rewarded validator with pubkey {:?} at height {} with {} satoshis for ticket {:?}",
+                    ticket.public_key,
+                    current_height,
+                    reward,
+                    ticket.id,
+                );
+                rewarded_validators.insert(ticket.public_key.clone());
+            }
+        }
+        Ok(())
+    }
+
+    pub fn adjust_ticket_price(&mut self, current_height: u64, live_ticket_count: usize) {
+        if current_height - self.last_price_adjustment_height < self.params.ticket_price_adjustment_period {
+            return;
+        }
+
+        let target = self.params.target_live_tickets as f64;
+        let current = live_ticket_count as f64;
+        let adjustment_factor = self.params.price_adjustment_factor;
+
+        let mut new_price = self.params.ticket_price as f64;
+
+        if current < target {
+            new_price *= 1.0 - adjustment_factor * (target - current) / target;
+            info!("Adjusting ticket price down. Current live tickets: {}, Target: {}", live_ticket_count, target);
+        } else if current > target {
+            new_price *= 1.0 + adjustment_factor * (current - target) / target;
+            info!("Adjusting ticket price up. Current live tickets: {}, Target: {}", live_ticket_count, target);
+        }
+
+        self.params.ticket_price = new_price.round() as u64;
+        // Ensure the new price is within min and max constraints
+        self.params.ticket_price = self.params.ticket_price.max(self.params.min_ticket_price).min(self.params.max_ticket_price);
+
+        self.last_price_adjustment_height = current_height;
+        info!("New ticket price: {}", self.params.ticket_price);
+    }
+
+    pub fn get_live_ticket_count(&self, height: u64) -> usize {
+        self.tickets
+            .iter()
+            .filter(|(_, t)| !self.is_ticket_expired(t, height) && self.is_ticket_mature(t, height, self.params.ticket_maturity as u64))
+            .count()
+    }
+    
+    pub fn select_tickets(&self, height: u64, num_tickets: usize) -> Vec<&Ticket> {
+        let mut eligible_tickets: Vec<&Ticket> = self.tickets
+            .iter()
+            .filter(|(_, t)| !self.is_ticket_expired(t, height) && self.is_ticket_mature(t, height, self.params.ticket_maturity as u64))
+            .map(|(_, t)| t)
+            .collect();
+            
+        eligible_tickets.sort_by_key(|t| (t.outpoint.txid, t.outpoint.vout));
+
+        eligible_tickets.into_iter().take(num_tickets).collect()
+    }
+
+    pub fn create_coinbase_ticket(&mut self, output: TxOutput, purchase_block_height: u64) -> Ticket {
+        let outpoint = OutPoint { txid: [0u8; 32], vout: 0 }; 
+        Ticket::new(
+            outpoint,
+            [0u8; 32], // commitment: placeholder
+            output.value,
+            purchase_block_height,
+            output.value,
+            output.extract_public_key_hash().unwrap_or_else(|| [0u8; 20]), // public_key as PubKeyHash
+        )
+    }
+
+    pub fn is_ticket_expired(&self, ticket: &Ticket, current_height: u64) -> bool {
+        ticket.purchase_block_height + self.params.ticket_expiry as u64 <= current_height
+    }
+
+    pub fn is_ticket_mature(&self, ticket: &Ticket, current_height: u64, maturity: u64) -> bool {
+        ticket.purchase_block_height + maturity <= current_height && ticket.purchase_block_height + self.params.pos_finality_depth as u64 <= current_height
+    }
+
+    pub fn validate_ticket_vote(
+        &self,
+        vote: &TicketVote,
+        block: &Block,
+        used_votes: &mut HashSet<TicketId>,
+    ) -> Result<(), ConsensusError> {
+        // Get the selected voters for the previous block
+        let selected_voters = select_voters(
+            &block.header.previous_block_hash,
+            self, // Pass self (PosState) to select_voters
+        );
+
+        // Check if the vote's ticket_id is among the selected voters
+        if !selected_voters.contains(&vote.ticket_id) {
+            return Err(ConsensusError::InvalidTicketVote(format!(
+                "Ticket {:?} was not selected for voting in this block.",
+                vote.ticket_id
+            )));
+        }
+
+        if !used_votes.insert(vote.ticket_id.clone()) {
+            return Err(ConsensusError::DuplicateTicketVote(format!(
+                "Duplicate vote for ticket {:?}",
+                vote.ticket_id
+            )));
+        }
+
+        let ticket = self.get_ticket(&vote.ticket_id)
+            .ok_or(ConsensusError::InvalidTicket("ticket not found".to_string()))?;
+
+        if self.is_ticket_expired(ticket, block.header.height) {
+            return Err(ConsensusError::ExpiredTicket(format!(
+                "Ticket {:?} expired at height {}",
+                vote.ticket_id,
+                block.header.height
+            )));
+        }
+
+        if !self.is_ticket_mature(ticket, block.header.height, self.params.ticket_maturity as u64) {
+            return Err(ConsensusError::ImmatureTicket(format!(
+                "Ticket {:?} not mature at height {}",
+                vote.ticket_id,
+                block.header.height
+            )));
+        }
+
+        let signature = Signature::from_bytes(&vote.signature.bytes);
+
+        let public_key = VerifyingKey::from_bytes(&ticket.public_key)
+            .map_err(ConsensusError::from)?;
+
+        public_key.verify(block.header.previous_block_hash.as_bytes(), &signature)
+            .map_err(ConsensusError::from)?;
+
+        Ok(())
+    }
+
+    pub fn validate_and_apply_ticket_votes(&mut self, block: &Block) -> Result<(), ConsensusError> {
+        let min_required = self.params.tickets_per_round as usize; // Use correct field
+        if block.ticket_votes.len() < min_required {
+            return Err(ConsensusError::InsufficientVotes(format!("Required: {}, Actual: {}", min_required, block.ticket_votes.len())));
+        }
+
+        let mut used_votes_in_block = HashSet::new();
+        for vote in &block.ticket_votes {
+            self.validate_ticket_vote(vote, block, &mut used_votes_in_block)?;
+        }
+        Ok(())
+    }
+
+    pub fn update_for_new_block(&mut self, block: &Block, used_tickets: &HashSet<TicketId>) {
+        self.update_ticket_status(block.header.height, used_tickets);
+        // Additional updates for PoS state based on the new block
+        // For instance, processing ticket purchases and redemptions
+    }
+
+    /// Validates a MasternodeNonParticipationProof.
+    pub fn validate_non_participation_proof(
+        &self,
+        proof: &MasternodeNonParticipationProof,
+        masternode_list: &MasternodeList,
+        current_block_height: u64,
+        challenge_params: &ConsensusParams
+    ) -> Result<(), ConsensusError> {
+        // Validate existence of Masternode
+        let masternode_entry = masternode_list.get_masternode(&proof.masternode_id)
+            .ok_or_else(|| ConsensusError::MasternodeError(format!("Masternode not found: {:?}", proof.masternode_id)))?;
+
+        // Check if the Masternode is in a state where it can be slashed for non-participation
+        // (e.g., Active or Probation)
+        if !matches!(masternode_entry.status, MasternodeStatus::Active | MasternodeStatus::Probation) {
+            return Err(ConsensusError::MasternodeError(format!("Masternode {:?} is not in a slashable state.", proof.masternode_id)));
+        }
+
+        // Verify the challenge details against expected values for the given block height
+        // This would involve fetching the actual challenge issued for that Masternode at that height
+        // For simplicity, we assume the proof.challenge is the correct one for now.
+
+        // Verify the signature on the challenge
+        let target_public_key = masternode_entry.identity.operator_public_key.clone();
+        let verifying_key = VerifyingKey::from_bytes(target_public_key.as_slice().try_into().map_err(|_| ConsensusError::InvalidSignature("Invalid public key length".to_string()))?) // Convert Vec<u8> to [u8; 32]
+            .map_err(ConsensusError::from)?;
+
+        let signed_message = bincode::encode_to_vec(&proof.challenge.challenge_nonce, bincode::config::standard()).map_err(|e| ConsensusError::SerializationError(e.to_string()))?; // Changed serialize to encode_to_vec
+
+        // Verify the PoSe response signature if a response was provided
+        if let Some(response) = &proof.response {
+            let signature = Signature::from_bytes(response.signed_block_hash.as_slice().try_into().map_err(|_| ConsensusError::InvalidSignature("Invalid signature length".to_string()))?); // Convert Vec<u8> to [u8; 64]
+
+            verifying_key.verify(&signed_message, &signature)
+                .map_err(ConsensusError::from)?;
+        }
+
+        // Verify witness signatures
+        if proof.witness_signatures.len() < challenge_params.min_witness_signatures as usize {
+            return Err(ConsensusError::InsufficientVotes(format!("Insufficient witness signatures: expected at least {}, got {}",
+                challenge_params.min_witness_signatures, proof.witness_signatures.len())));
+        }
+
+        for witness_sig in &proof.witness_signatures {
+            let witness_mn_entry = masternode_list.get_masternode(&witness_sig.masternode_id)
+                .ok_or_else(|| ConsensusError::MasternodeError(format!("Witness Masternode not found: {:?}", witness_sig.masternode_id)))?;
+            let witness_public_key = witness_mn_entry.identity.operator_public_key.clone();
+            let verifying_key = VerifyingKey::from_bytes(witness_public_key.as_slice().try_into().map_err(|_| ConsensusError::InvalidSignature("Invalid public key length".to_string()))?) // Convert Vec<u8> to [u8; 32]
+                .map_err(ConsensusError::from)?;
+            let signature = Signature::from_bytes(witness_sig.signature.as_slice().try_into().map_err(|_| ConsensusError::InvalidSignature("Invalid signature length".to_string()))?); // Convert Vec<u8> to [u8; 64]
+
+            verifying_key.verify(&signed_message, &signature)
+                .map_err(ConsensusError::from)?;
+        }
+
+        let proof_hash = blake3::hash(&bincode::encode_to_vec(proof, bincode::config::standard()).map_err(|e| ConsensusError::SerializationError(e.to_string()))?).into(); // Changed serialize to encode_to_vec
+
+        // Logic to apply the slash (update MasternodeEntry status, record slash event)
+        // This part would interact with the MasternodeList to update the state.
+        info!("Masternode {:?} slashed for non-participation at height {}", proof.masternode_id, current_block_height);
+
+        Ok(())
+    }
+
+    /// Validates a MasternodeMaliciousProof.
+    pub fn validate_malicious_proof(
+        &self,
+        proof: &MasternodeMaliciousProof,
+        masternode_list: &MasternodeList,
+    ) -> Result<(), ConsensusError> {
+        // 1. Verify the Masternode being slashed exists.
+        let slashed_masternode_entry = masternode_list.get_masternode(&proof.masternode_id)
+            .ok_or(ConsensusError::MasternodeError(format!("Slashing target Masternode {:?} not found.", proof.masternode_id)))?;
+
+        // 2. Validate proof_data based on malicious_action_type
+        match proof.malicious_action_type {
+            MaliciousActionType::DoubleSigning => {
+                // For double-signing, proof_data would contain two conflicting signatures.
+                // This would involve more complex logic to verify these signatures against a known message.
+                // For simplicity, we'll just check if proof_data is not empty.
+                if proof.proof_data.is_empty() {
+                    return Err(ConsensusError::MasternodeError("Double-signing proof data is empty.".to_string()));
+                }
+                // A real implementation would parse proof_data to extract signatures and verify them.
+            },
+            MaliciousActionType::InvalidServiceProvision => {
+                // For invalid service provision, proof_data might contain evidence like invalid PoSe responses or block proposals.
+                // Similar to double-signing, a detailed verification of proof_data would be needed.
+                if proof.proof_data.is_empty() {
+                    return Err(ConsensusError::MasternodeError("Invalid service provision proof data is empty.".to_string()));
+                }
+            },
+            MaliciousActionType::GovernanceViolation => {
+                // For governance violation, proof_data could contain evidence of incorrect voting or proposal manipulation.
+                if proof.proof_data.is_empty() {
+                    return Err(ConsensusError::MasternodeError("Governance violation proof data is empty.".to_string()));
+                }
+            },
+        }
+
+        Ok(())
+    }
+
+    pub fn get_all_tickets(&self) -> impl Iterator<Item = &Ticket> {
+        self.tickets.values()
+    }
+}
+
+// 3.3 Ticket Price Adjustment Parameters (Example values)
+pub const INITIAL_TICKET_PRICE: u64 = 100_000_000; // 1 RUST in satoshis
+const TARGET_LIVE_TICKETS: usize = 20_000;
+const TICKET_PRICE_ADJUSTMENT_PERIOD: u64 = 2016;
+const K_P: f64 = 0.05;
+const MAX_TICKET_PRICE: u64 = 1_000_000_000; // 10 RUST
+const MIN_TICKET_PRICE: u64 = 10_000_000; // 0.1 RUST
+
+pub fn calculate_new_ticket_price(
+    current_block_height: u64,
+    last_ticket_price: u64,
+    avg_live_tickets_count: usize,
+) -> u64 {
+    if current_block_height == 0 {
+        return INITIAL_TICKET_PRICE;
+    }
+    if current_block_height % TICKET_PRICE_ADJUSTMENT_PERIOD != 0 {
+        return last_ticket_price;
+    }
+
+    let n_l = avg_live_tickets_count as f64;
+    let t_g = TARGET_LIVE_TICKETS as f64;
+
+    let p_new_f64 = last_ticket_price as f64 * (1.0 + (K_P * (n_l - t_g) / t_g));
+    let mut p_new = p_new_f64.round() as u64;
+
+    // Apply constraints
+    if p_new > MAX_TICKET_PRICE {
+        p_new = MAX_TICKET_PRICE;
+    } else if p_new < MIN_TICKET_PRICE {
+        p_new = MIN_TICKET_PRICE;
+    }
+    p_new
+}
+
+// 3.4 Voter Selection Parameters (Example values)
+const VOTERS_PER_BLOCK: usize = 5;
+
+pub fn select_voters(
+    prev_block_hash: &[u8; 32],
+    live_tickets_pool: &PosState,
+) -> Vec<TicketId> {
+    let mut rng = ChaCha8Rng::from_seed(*prev_block_hash);
+    let mut eligible_tickets: Vec<TicketId> = live_tickets_pool.tickets
+        .iter()
+        .filter(|(_, t)| !live_tickets_pool.is_ticket_expired(t, live_tickets_pool.params.ticket_maturity as u64) && live_tickets_pool.is_ticket_mature(t, live_tickets_pool.params.ticket_maturity as u64, live_tickets_pool.params.ticket_maturity as u64))
+        .map(|(id, _)| id.clone())
+        .collect();
+
+    // Sort deterministically to ensure consistent selection across nodes
+    eligible_tickets.sort_by(|a, b| a.cmp(b)); // Corrected tuple indexing
+
+    eligible_tickets.shuffle(&mut rng);
+
+    eligible_tickets.into_iter().take(live_tickets_pool.params.tickets_per_round).collect()
+}
+
+// 3.5 Block Validation Parameters (Example values)
+    for (ticket_id, _ticket) in &live_tickets_pool.tickets {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(prev_block_hash);
+        hasher.update(&bincode::encode_to_vec(ticket_id, bincode::config::standard()).unwrap());
+        let lottery_score_bytes: [u8; 32] = hasher.finalize().into();
+        let lottery_score = u64::from_le_bytes(lottery_score_bytes[0..8].try_into().unwrap());
+        selected_voters.push((lottery_score, ticket_id.clone()));
+    }
+
+    // Sort by lottery score, then by TicketId for tie-breaking
+    selected_voters.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.0.cmp(&b.1.0)));
+
+    selected_voters
+        .into_iter()
+        .take(VOTERS_PER_BLOCK)
+        .map(|(_, id)| id)
+        .collect()
+}
+
+// 3.5 Block Validation Parameters (Example values)
+const MIN_VALID_VOTES_REQUIRED: usize = 3;
+
+pub fn validate_pos_block(
+    _block_header: &BlockHeader,
+    prev_block_hash: &[u8; 32],
+    live_tickets_pool: &PosState,
+) -> bool {
+    // 3.5.1 ticket_votes Structure Validation:
+    // Commented out as block_header.ticket_votes is non-existent
+    // TODO: This function should operate on a Block, not BlockHeader, to access ticket_votes.
+    // For now, this logic is disabled.
+
+    let _expected_voters = select_voters(prev_block_hash, live_tickets_pool);
+    let valid_votes_count = 0;
+
+    // Remove for ticket_vote in &block_header.ticket_votes { ... }
+    // ...existing code...
+
+    // 3.5.3 Quorum Check:
+    if valid_votes_count < MIN_VALID_VOTES_REQUIRED {
+        println!(
+            "POS Validation Failed: Not enough valid votes. Required: {}, Found: {}.",
+            MIN_VALID_VOTES_REQUIRED, valid_votes_count
+        );
+        return false;
+    }
+
+    true
+}
+
+/// Identifies tickets eligible for non-participation slashing and returns their details.
+pub fn get_slashing_eligible_tickets(
+    pos_state: &PosState,
+    masternode_list: &MasternodeList,
+    current_height: u64,
+) -> Vec<(TicketId, OutPoint, u64)> {
+    let mut eligible_for_slash = Vec::new();
+    let params = &pos_state.params;
+
+    for (_ticket_id, ticket) in &pos_state.tickets {
+        // Check if the ticket is mature and past the grace period for non-participation
+        if pos_state.is_ticket_mature(ticket, current_height, params.ticket_maturity as u64) &&
+           ticket.purchase_block_height + params.grace_period_blocks as u64 <= current_height {
+            
+            // If the ticket is associated with a masternode, check its PoSe status
+            if let Some(masternode_id) = &ticket.masternode_id {
+                if let Some(mn_entry) = masternode_list.get_masternode(masternode_id) {
+                    // Masternode is eligible for slashing if it has accumulated enough PoSe failures
+                    // and is not within the forgiveness period since its last slash.
+                    let last_slashed = mn_entry.last_slashed_height.unwrap_or(0);
+                    if mn_entry.pose_failure_count >= params.max_pose_failures &&
+                       current_height - last_slashed as u64 >= params.slash_forgiveness_period as u64 {
+                        eligible_for_slash.push((ticket.id.clone(), ticket.outpoint.clone(), mn_entry.pose_failure_count as u64));
+                    }
+                }
+            }
+        }
+    }
+    eligible_for_slash
+}
+
+pub fn calculate_pos_reward(_block_height: u32) -> u64 {
+    // Placeholder for PoS reward calculation
+    // This should be dynamic based on factors like block height, staking difficulty, etc.
+    100000000 // Example: 1 coin (100,000,000 satoshis)
+}
+
+pub fn calculate_ticket_hash(outpoint: &OutPoint) -> TicketId {
+    blake3::hash(&outpoint.encode_to_vec().unwrap()).into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validate_ticket_signature;
+    use ed25519_dalek::Keypair;
+    use rand::rngs::OsRng;
+    use rusty_shared_types::{BlockHeader, TxOutput, VoteType};
+    use std::str::FromStr;
+
+    fn create_test_ticket(txid: Hash, vout: u32, public_key: PublicKey, purchase_block_height: u64, value: u64) -> Ticket {
+        let outpoint = OutPoint { txid, vout };
+        Ticket::new(outpoint, [0; 32], value, purchase_block_height, value, public_key)
+    }
+
+    fn create_test_block(height: u64, prev_hash: Hash, num_votes: usize) -> Block {
+        let header = BlockHeader {
+            version: 1,
+            previous_block_hash: prev_hash,
+            merkle_root: [0; 32],
+            state_root: [0; 32], // Added state_root for testing
+            timestamp: 0,
+            bits: 0,
+            nonce: 0,
+            height,
+        };
+        Block::new(header, vec![], vec![])
+    }
+
+    #[test]
+    fn test_pos_state_initialization() {
+        let params = ConsensusParams::default();
+        let pos_state = PosState::new(params);
+        assert_eq!(pos_state.tickets.len(), 0);
+    }
+
+    #[test]
+    fn test_add_ticket() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let ticket = create_test_ticket([1; 32], 0, [2; 32], 100, 1000);
+        let ticket_id = ticket.id.clone();
+        pos_state.add_ticket(ticket.clone()).unwrap();
+        assert_eq!(pos_state.tickets.len(), 1);
+        assert!(pos_state.get_ticket(&ticket_id).is_some());
+    }
+
+    #[test]
+    fn test_prune_expired_tickets() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let ticket1 = create_test_ticket([1; 32], 0, [2; 32], 100, 1000);
+        let ticket2 = create_test_ticket([3; 32], 0, [4; 32], 105, 1000);
+        let ticket3 = create_test_ticket([5; 32], 0, [6; 32], 110, 1000);
+        pos_state.add_ticket(ticket1.clone()).unwrap();
+        pos_state.add_ticket(ticket2.clone()).unwrap();
+        pos_state.add_ticket(ticket3.clone()).unwrap();
+
+        // Set ticket expiry to 10 blocks for testing
+        pos_state.params.ticket_expiry = 10;
+
+        // Simulate advancing height to expire ticket1
+        let current_height = 111;
+        pos_state.update_ticket_status(current_height, &HashSet::new());
+        
+        assert_eq!(pos_state.tickets.len(), 2); // ticket1 should be removed
+        assert!(pos_state.get_ticket(&ticket1.id).is_none());
+        assert!(pos_state.get_ticket(&ticket2.id).is_some());
+        assert!(pos_state.get_ticket(&ticket3.id).is_some());
+    }
+
+    #[test]
+    fn test_get_live_ticket_count() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        pos_state.params.ticket_maturity = 0; // Make tickets mature immediately for this test
+        pos_state.params.ticket_expiry = 100; // Set a high expiry
+
+        let ticket1 = create_test_ticket([1; 32], 0, [2; 32], 0, 1000);
+        let ticket2 = create_test_ticket([3; 32], 0, [4; 32], 5, 1000);
+        pos_state.add_ticket(ticket1).unwrap();
+        pos_state.add_ticket(ticket2).unwrap();
+
+        assert_eq!(pos_state.get_live_ticket_count(10), 2);
+
+        // Add an expired ticket
+        let expired_ticket = create_test_ticket([5; 32], 0, [6; 32], 0, 1000);
+        pos_state.params.ticket_expiry = 5; // Set expiry to 5 blocks
+        pos_state.add_ticket(expired_ticket).unwrap();
+        assert_eq!(pos_state.get_live_ticket_count(10), 2); // Still 2, as one is expired
+    }
+
+    #[test]
+    fn test_select_tickets() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        pos_state.params.ticket_maturity = 0; // Make tickets mature immediately for this test
+        pos_state.params.ticket_expiry = 100; // Set a high expiry
+
+        let ticket1 = create_test_ticket([1; 32], 0, [2; 32], 0, 1000);
+        let ticket2 = create_test_ticket([3; 32], 0, [4; 32], 0, 1000);
+        let ticket3 = create_test_ticket([5; 32], 0, [6; 32], 0, 1000);
+        pos_state.add_ticket(ticket1.clone()).unwrap();
+        pos_state.add_ticket(ticket2.clone()).unwrap();
+        pos_state.add_ticket(ticket3.clone()).unwrap();
+
+        let selected = pos_state.select_tickets(10, 2);
+        assert_eq!(selected.len(), 2);
+        // We expect the tickets to be sorted by their outpoint (txid, vout)
+        assert_eq!(selected[0].id, ticket1.id);
+        assert_eq!(selected[1].id, ticket2.id);
+    }
+
+    #[test]
+    fn test_finality_supermajority() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let block_hash = [0xAA; 32];
+        let num_votes = pos_state.params.tickets_per_round as usize + 1; // Supermajority
+        let block = create_test_block(100, block_hash, num_votes);
+
+        for i in 0..num_votes {
+            pos_state.add_ticket(create_test_ticket(block.ticket_votes[i].ticket_id.txid, block.ticket_votes[i].ticket_id.vout_index, [0u8;32], 50, 1000)).unwrap();
+        }
+
+        assert!(pos_state.validate_and_apply_ticket_votes(&block).is_ok());
+    }
+
+    #[test]
+    fn test_finality_quorum_failure() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let block_hash = [0xBB; 32];
+        let num_votes = pos_state.params.tickets_per_round as usize - 1; // Less than quorum
+        let block = create_test_block(100, block_hash, num_votes);
+
+        for i in 0..num_votes {
+            pos_state.add_ticket(create_test_ticket(block.ticket_votes[i].ticket_id.txid, block.ticket_votes[i].ticket_id.vout_index, [0u8;32], 50, 1000)).unwrap();
+        }
+
+        assert!(pos_state.validate_and_apply_ticket_votes(&block).is_err());
+    }
+
+    #[test]
+    fn test_finality_reversal() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let block_hash = [0xCC; 32];
+        let num_votes = pos_state.params.tickets_per_round as usize + 1; // Supermajority
+        let block = create_test_block(100, block_hash, num_votes);
+
+        for i in 0..num_votes {
+            pos_state.add_ticket(create_test_ticket(block.ticket_votes[i].ticket_id.txid, block.ticket_votes[i].ticket_id.vout_index, [0u8;32], 50, 1000)).unwrap();
+        }
+
+        // Simulate an attempt to reverse a finalized block
+        // This test would typically involve checking the PoS state after a fork
+        // For now, we just assert that validating the same block again with the same votes would fail due to duplicate votes.
+        assert!(pos_state.validate_and_apply_ticket_votes(&block).is_err());
+    }
+
+    #[test]
+    fn test_validate_pos_block_success() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let block_hash = [0xDD; 32];
+        let num_votes = pos_state.params.tickets_per_round as usize + 5; // Enough votes
+        let block = create_test_block(100, block_hash, num_votes);
+
+        for i in 0..num_votes {
+            pos_state.add_ticket(create_test_ticket(block.ticket_votes[i].ticket_id.txid, block.ticket_votes[i].ticket_id.vout_index, [0u8;32], 50, 1000)).unwrap();
+        }
+
+        assert!(validate_pos_block(&block, &pos_state).is_ok());
+    }
+
+    #[test]
+    fn test_validate_pos_block_insufficient_votes() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        let block_hash = [0xEE; 32];
+        let num_votes = pos_state.params.tickets_per_round as usize - 1; // Insufficient votes
+        let block = create_test_block(100, block_hash, num_votes);
+
+        for i in 0..num_votes {
+            pos_state.add_ticket(create_test_ticket(block.ticket_votes[i].ticket_id.txid, block.ticket_votes[i].ticket_id.vout_index, [0u8;32], 50, 1000)).unwrap();
+        }
+        assert!(validate_pos_block(&block, &pos_state).is_err());
+    }
+
+    #[test]
+    fn test_validate_pos_block_no_ticket_votes() {
+        let pos_state = PosState::new(ConsensusParams::default());
+        let block_hash = [0xFF; 32];
+        let block = create_test_block(100, block_hash, 0); // No votes
+        assert!(validate_pos_block(&block, &pos_state).is_err());
+    }
+
+    #[test]
+    fn test_slash_for_non_participation() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        pos_state.params.ticket_maturity = 0;
+        pos_state.params.ticket_expiry = 10;
+
+        let ticket1 = create_test_ticket([1; 32], 0, [2; 32], 0, 1000);
+        let ticket2 = create_test_ticket([3; 32], 0, [4; 32], 5, 1000);
+        pos_state.add_ticket(ticket1.clone()).unwrap();
+        pos_state.add_ticket(ticket2.clone()).unwrap();
+
+        let current_height = 11;
+        pos_state.slash_for_non_participation(current_height);
+
+        assert_eq!(pos_state.tickets.len(), 1);
+        assert!(pos_state.get_ticket(&ticket1.id).is_none());
+        assert!(pos_state.get_ticket(&ticket2.id).is_some());
+    }
+
+    #[test]
+    fn test_distribute_rewards() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        pos_state.params.reward_amount = 100; // Example reward
+        pos_state.params.ticket_maturity = 0; // Mature immediately
+        pos_state.params.ticket_expiry = 100; // High expiry
+
+        let ticket1 = create_test_ticket([1; 32], 0, [2; 32], 0, 1000);
+        let ticket2 = create_test_ticket([3; 32], 0, [4; 32], 0, 1000);
+        pos_state.add_ticket(ticket1.clone()).unwrap();
+        pos_state.add_ticket(ticket2.clone()).unwrap();
+
+        let block = create_test_block(10, [0; 32], 0); // Block height 10
+        let result = pos_state.distribute_rewards(&block);
+        assert!(result.is_ok());
+        // In a real scenario, you'd check for reward distribution effects on balances
+    }
+
+    #[test]
+    fn test_adjust_ticket_price() {
+        let mut pos_state = PosState::new(ConsensusParams::default());
+        pos_state.params.target_live_tickets = 100; // Target 100 live tickets
+        pos_state.params.price_adjustment_factor = 0.1; // 10% adjustment
+        pos_state.params.ticket_price = 1000; // Initial price
+        pos_state.params.ticket_expiry = 10; // Adjust every 10 blocks
+
+        // Case 1: Live tickets less than target (price should decrease)
+        let ticket1 = create_test_ticket([1; 32], 0, [2; 32], 0, 1000);
+        let ticket2 = create_test_ticket([3; 32], 0, [4; 32], 0, 1000);
+        pos_state.add_ticket(ticket1).unwrap();
+        pos_state.add_ticket(ticket2).unwrap();
+
+        pos_state.adjust_ticket_price(10, 50); // 50 live tickets, target 100
+        // Expected new price: 1000 * (1 - 0.1 * (100-50)/100) = 1000 * (1 - 0.05) = 950
+        assert_eq!(pos_state.params.ticket_price, 950);
+        assert_eq!(pos_state.last_price_adjustment_height, 10);
+
+        // Case 2: Live tickets more than target (price should increase)
+        pos_state.params.ticket_price = 1000; // Reset price
+        pos_state.adjust_ticket_price(20, 150); // 150 live tickets, target 100
+        // Expected new price: 1000 * (1 + 0.1 * (150-100)/100) = 1000 * (1 + 0.05) = 1050
+        assert_eq!(pos_state.params.ticket_price, 1050);
+        assert_eq!(pos_state.last_price_adjustment_height, 20);
+
+        // Case 3: No adjustment if not at expiry height
+        pos_state.params.ticket_price = 1000; // Reset price
+        pos_state.adjust_ticket_price(21, 100); // Not at expiry height
+        assert_eq!(pos_state.params.ticket_price, 1000);
+        assert_eq!(pos_state.last_price_adjustment_height, 20); // Should not update
+    }
+
+    #[test]
+    fn test_calculate_new_ticket_price() {
+        let params = ConsensusParams::default();
+        let current_block_height = 10;
+        let last_ticket_price = 1000;
+        let avg_live_tickets_count = 100;
+
+        // Assuming params.ticket_expiry = 10 for this test
+        let mut test_params = params.clone();
+        test_params.ticket_expiry = 10;
+        test_params.target_live_tickets = 100;
+        test_params.price_adjustment_factor = 0.1;
+
+        // No change if current_block_height is not a multiple of ticket_expiry
+        let new_price = calculate_new_ticket_price(11, last_ticket_price, avg_live_tickets_count);
+        assert_eq!(new_price, last_ticket_price);
+
+        // Price decrease
+        let new_price_decrease = calculate_new_ticket_price(20, last_ticket_price, 50);
+        assert_eq!(new_price_decrease, 950); // 1000 * (1 - 0.1 * (100-50)/100)
+
+        // Price increase
+        let new_price_increase = calculate_new_ticket_price(30, last_ticket_price, 150);
+        assert_eq!(new_price_increase, 1050); // 1000 * (1 + 0.1 * (150-100)/100)
+
+        // No change if live tickets are on target
+        let new_price_no_change = calculate_new_ticket_price(40, last_ticket_price, 100);
+        assert_eq!(new_price_no_change, last_ticket_price);
+    }
+}

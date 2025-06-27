@@ -1,0 +1,437 @@
+Here's the revised blueprint, applying these principles. I've used consistent markdown, clear headers, explicit KEYWORD tags, and a more uniform "TO DO" list format within each section.
+
+## Rusty Coin: Technical Blueprint for LLM Processing (v2.1)
+
+**PROJECT_META:**
+* **PROJECT_NAME:** Rusty Coin
+* **TICKER:** $RUST
+* **STATUS:** Public Testnet Phase
+* **LAST_UPDATED:** June 18, 2025
+
+---
+
+### 1.0 VISION_PHILOSOPHY: TECHNICAL_UNDERPINNINGS
+
+**CONCEPT:** Decentralized, secure, resilient digital currency built on Rust.
+**RUST_JUSTIFICATION:** Compile-time memory/concurrency safety, robust.
+**HOMESTEAD_MODEL:** 100% fair launch, no pre-mine, no ICO, no protocol treasury. Rewards direct to participants.
+
+---
+
+### 2.0 CORE_ARCHITECTURE: CRATE_STRUCTURE
+
+**ARCHITECTURE_PRINCIPLES:** Performance, Scalability, Modularity, TDD, Robust Error Handling.
+**ASYNC_RUNTIME:** Tokio (primary choice for high-performance async operations).
+
+**CRATE_BREAKDOWN (DEVELOPER_TASKS):**
+
+* **CRATE_NAME: `rusty-node` (BINARY)**
+    * **TASK_ID: RNODE_001** | **TYPE: Configuration**
+        * **DESCRIPTION:** Implement robust configuration parsing (CLI, ENV, TOML files).
+        * **DETAIL:** Use `confy` or `config` crates.
+    * **TASK_ID: RNODE_002** | **TYPE: Logging**
+        * **DESCRIPTION:** Integrate structured logging.
+        * **DETAIL:** Use `tracing` with `tracing-subscriber` for customizable output (console, file, JSON).
+    * **TASK_ID: RNODE_003** | **TYPE: Orchestration**
+        * **DESCRIPTION:** Manage startup/graceful shutdown of all components.
+        * **DETAIL:** Leverage `tokio::spawn` and cancellation tokens/channels.
+    * **TASK_ID: RNODE_004** | **TYPE: Monitoring**
+        * **DESCRIPTION:** Develop health-check endpoint / status display.
+
+* **CRATE_NAME: `rusty-core` (LIBRARY)**
+    * **TASK_ID: RCORE_001** | **TYPE: Data_Structures**
+        * **DESCRIPTION:** Define all core blockchain data types.
+        * **DETAIL:** `Block`, `Transaction`, `TxInput`, `TxOutput`, `UTXO`, `BlockHeader`, `TicketVote`. Use Rust `struct`/`enum`.
+    * **TASK_ID: RCORE_002** | **TYPE: Serialization**
+        * **DESCRIPTION:** Implement efficient binary serialization/deserialization.
+        * **DETAIL:** Use `bincode` or `postcard` for network/disk. Ensure canonical serialization for hashing.
+    * **TASK_ID: RCORE_003** | **TYPE: Traits**
+        * **DESCRIPTION:** Implement `Hash`, `Eq`, `PartialEq`, `Copy`, `Clone` where appropriate.
+    * **TASK_ID: RCORE_004** | **TYPE: Documentation**
+        * **DESCRIPTION:** Provide comprehensive Rustdoc for all public APIs.
+
+* **CRATE_NAME: `rusty-consensus` (LIBRARY)**
+    * **TASK_ID: RCON_001** | **TYPE: State_Machine**
+        * **DESCRIPTION:** Implement core consensus state machine.
+        * **SUBTASK: RCON_001A** | **SUBTYPE: Block_Validation**
+            * **DESCRIPTION:** `fn validate_block(block: &Block, state: &BlockchainState) -> Result<(), ConsensusError>`.
+        * **SUBTASK: RCON_001B** | **SUBTYPE: Transaction_Validation**
+            * **DESCRIPTION:** `fn validate_transaction(tx: &Transaction, utxo_set: &UtxoSet) -> Result<(), ConsensusError>`.
+        * **SUBTASK: RCON_001C** | **SUBTYPE: UTXO_Management**
+            * **DESCRIPTION:** Implement persistent `UtxoSet`.
+            * **DETAIL:** Use `RocksDB` for key-value store. Implement column families for UTXOs, tickets, block metadata. Ensure atomic batch writes for state transitions. Efficient indexing for lookups.
+        * **SUBTASK: RCON_001D** | **SUBTYPE: Difficulty_Adjustment**
+            * **DESCRIPTION:** Implement periodic difficulty recalculation based on OxideHash and target block time.
+        * **SUBTASK: RCON_001E** | **SUBTYPE: PoS_Ticket_Management**
+            * **DESCRIPTION:** Implement data structures and logic for tracking ticket lifecycle.
+
+* **CRATE_NAME: `rusty-p2p` (LIBRARY)**
+    * **TASK_ID: RP2P_001** | **TYPE: Libp2p_Integration**
+        * **DESCRIPTION:** Initialize and manage `libp2p::Swarm`.
+    * **TASK_ID: RP2P_002** | **TYPE: Peer_Discovery**
+        * **DESCRIPTION:** Configure `Kademlia` DHT for peer discovery and address storage.
+    * **TASK_ID: RP2P_003** | **TYPE: Security_Transport**
+        * **DESCRIPTION:** Implement `Noise` (authenticated encryption) and `mplex` (stream multiplexing).
+    * **TASK_ID: RP2P_004** | **TYPE: Custom_Protocols**
+        * **DESCRIPTION:** Implement `/rusty/block-sync/1.0` (block requests/serving, range requests).
+        * **DESCRIPTION:** Implement `/rusty/tx-prop/1.0` (transaction gossiping).
+        * **DETAIL:** Use `gossipsub` or custom push-pull; implement relay logic (valid, unseen TXs).
+    * **TASK_ID: RP2P_005** | **TYPE: Connection_Management**
+        * **DESCRIPTION:** Handle connections, disconnections, peer scoring, blacklisting. Maintain healthy connection count.
+
+* **CRATE_NAME: `rusty-crypto` (LIBRARY)**
+    * **TASK_ID: RCRY_001** | **TYPE: OxideHash_Implementation**
+        * **DESCRIPTION:** Implement `OxideHash`.
+        * **DETAIL:** Define exact number of pseudo-random read/compute operations (e.g., $2^{20}$). Specify precise inner arithmetic/logic ops (XOR, rotations, small AES-like permutations). Use BLAKE3 for seeding. Optimize for GPUs (OpenCL/CUDA FFI or optimized CPU fallback).
+    * **TASK_ID: RCRY_002** | **TYPE: Ed25519_Integration**
+        * **DESCRIPTION:** Integrate `ed25519-dalek` or `curve25519-dalek`.
+        * **DETAIL:** Provide wrappers for key generation, signing, verification.
+    * **TASK_ID: RCRY_003** | **TYPE: Hashing_Utilities**
+        * **DESCRIPTION:** Integrate `blake3` for Merkle tree construction. Implement `merkle_root` functions.
+    * **TASK_ID: RCRY_004** | **TYPE: Side_Channel_Mitigation**
+        * **DESCRIPTION:** Ensure all cryptographic ops are constant-time.
+
+* **CRATE_NAME: `rusty-masternode` (LIBRARY)**
+    * **TASK_ID: RMN_001** | **TYPE: Masternode_Lifecycle**
+        * **DESCRIPTION:** Implement registration/deregistration, collateral lock mechanism (specific UTXO type).
+    * **TASK_ID: RMN_002** | **TYPE: PoSe_Protocol**
+        * **DESCRIPTION:** Develop challenge-response protocol.
+        * **DETAIL:** Define frequency, timeout. Implement deterministic quorum selection (VRF/PRF seeded by block hash). Implement signature generation for responses.
+    * **TASK_ID: RMN_003** | **TYPE: Slashing_Mechanisms**
+        * **DESCRIPTION:** Implement slashing for PoSe failures (e.g., 5-10% for non-response, 100% for provable malice, burned).
+    * **TASK_ID: RMN_004** | **TYPE: MNList_Management**
+        * **DESCRIPTION:** Implement active/inactive MNList tracking. Secure MNList (hash in `state_root`).
+    * **TASK_ID: RMN_005** | **TYPE: OxideSend_Protocol**
+        * **DESCRIPTION:** Develop deterministic MN quorum selection for OxideSend (10-15 MNs).
+        * **DETAIL:** Implement input locking protocol (M-of-N signatures on TX inputs). Design client-side verification of locks. Implement slashing for OxideSend double-spend attempts.
+    * **TASK_ID: RMN_006** | **TYPE: FerrousShield_Protocol**
+        * **DESCRIPTION:** Design trust-minimized CoinJoin coordination (multi-round, blinded signatures/commitments).
+        * **DETAIL:** Implement queuing system. Define fee structure (small fixed fee to coordinating MNs).
+
+* **CRATE_NAME: `rusty-rpc` (LIBRARY)**
+    * **TASK_ID: RRPC_001** | **TYPE: Server_Implementation**
+        * **DESCRIPTION:** Build JSON-RPC 2.0 server.
+        * **DETAIL:** Use `jsonrpsee` or `axum`.
+    * **TASK_ID: RRPC_002** | **TYPE: Method_Definition**
+        * **DESCRIPTION:** Define all RPC methods (e.g., `getblock`, `sendrawtransaction`, `getmasternodecount`).
+    * **TASK_ID: RRPC_003** | **TYPE: Security**
+        * **DESCRIPTION:** Implement authentication/authorization for sensitive calls (API keys/token-based over HTTPS).
+        * **DESCRIPTION:** Implement rate limiting (per IP/user).
+    * **TASK_ID: RRPC_004** | **TYPE: Error_Handling**
+        * **DESCRIPTION:** Ensure JSON-RPC 2.0 compliant error codes/messages.
+    * **TASK_ID: RRPC_005** | **TYPE: Interface_Options**
+        * **DESCRIPTION:** Consider both HTTP and WebSocket RPC interfaces.
+
+* **CRATE_NAME: `rusty-wallet` (LIBRARY)**
+    * **TASK_ID: RWAL_001** | **TYPE: Key_Derivation**
+        * **DESCRIPTION:** Implement HD (BIP-32/BIP-39 compatible) key derivation.
+    * **TASK_ID: RWAL_002** | **TYPE: Key_Storage**
+        * **DESCRIPTION:** Integrate secure key storage (`sodiumoxide` or OS keychain via `keyring-rs`).
+    * **TASK_ID: RWAL_003** | **TYPE: Transaction_Building**
+        * **DESCRIPTION:** Develop robust transaction construction (UTXO selection, change calculation, fee estimation).
+    * **TASK_ID: RWAL_004** | **TYPE: Signing**
+        * **DESCRIPTION:** Implement Ed25519 signing for transactions.
+    * **TASK_ID: RWAL_005** | **TYPE: RPC_Integration**
+        * **DESCRIPTION:** Integrate with `rusty-rpc` for state queries and TX broadcasting.
+
+---
+
+### 3.0 CONSENSUS_PROTOCOL: OXIDESYNC
+
+**CONCEPT:** Hybrid PoW/PoS for security and finality.
+
+#### 3.1 PROOF_OF_WORK: OxideHash
+
+* **TASK_ID: POW_001** | **TYPE: Algorithm_Definition**
+    * **DESCRIPTION:** Finalize and implement OxideHash specifics.
+    * **DETAIL:** Define exact number of read/compute iterations (e.g., $2^{20}$). Specify precise inner arithmetic operations (XOR, rotations, small AES-like permutations).
+* **TASK_ID: POW_002** | **TYPE: Memory_Management**
+    * **DESCRIPTION:** Implement efficient 1GiB scratchpad allocation and access.
+    * **DETAIL:** Leverage `mmap` for large memory blocks.
+* **TASK_ID: POW_003** | **TYPE: Optimization**
+    * **DESCRIPTION:** Optimize for GPU architectures (OpenCL/CUDA FFI if feasible).
+* **TASK_ID: POW_004** | **TYPE: Hash_Function**
+    * **DESCRIPTION:** Ensure BLAKE3 is used for seeding scratchpad.
+
+#### 3.2 PROOF_OF_STAKE: Ticket_Voting
+
+* **TASK_ID: POS_001** | **TYPE: Ticket_Lifecycle**
+    * **DESCRIPTION:** Implement Ticket Purchase (specific UTXO lock).
+    * **DESCRIPTION:** Implement Ticket Expiration (e.g., 4096 blocks).
+    * **DESCRIPTION:** Design Ticket Renewal mechanism (optional, for post-launch governance).
+* **TASK_ID: POS_002** | **TYPE: Voter_Selection**
+    * **DESCRIPTION:** Implement deterministic pseudo-random function (PRF) for selecting 5 ticket voters.
+    * **DETAIL:** PRF seeded by `prev_block_hash`. Resistant to manipulation. Consider VDF for enhanced randomness.
+* **TASK_ID: POS_003** | **TYPE: Block_Validation**
+    * **DESCRIPTION:** Verify `ticket_votes` vector (5 votes, 3 valid Ed25519 signatures of `prev_block_hash`).
+* **TASK_ID: POS_004** | **TYPE: Slashing_Implementation**
+    * **DESCRIPTION:** Define and implement PoS slashing conditions:
+        * Non-participation (missed votes).
+        * Double-voting (signing conflicting block hashes).
+        * Malicious voting (voting on invalid chain).
+    * **DESCRIPTION:** Implement on-chain "slashing proof" mechanism.
+    * **DETAIL:** Define penalties (e.g., 5-10% for non-participation, 100% for malicious acts, burned funds).
+* **TASK_ID: POS_005** | **TYPE: Ticket_Price_Adjustment**
+    * **DESCRIPTION:** Implement dynamic ticket price adjustment every 2016 blocks.
+    * **DETAIL:** Use PID controller or similar feedback loop targeting ~20,000 live tickets.
+
+#### 3.3 BLOCK_HEADER_STRUCTURE
+
+* **TASK_ID: BHS_001** | **TYPE: Validation_Rules**
+    * **DESCRIPTION:** Implement rigorous validation for all `BlockHeader` fields.
+    * **DETAIL:** `version` check, `prev_block_hash` match, `merkle_root` correctness, `state_root` correctness, `timestamp` range/monotonicity, `difficulty_target` match, `nonce` validity.
+* **TASK_ID: BHS_002** | **TYPE: Canonical_Serialization**
+    * **DESCRIPTION:** Ensure canonical serialization rules for all structures before hashing.
+
+**BLOCK_STRUCT_RUST:**
+```rust
+pub struct BlockHeader {
+    pub version: u32,             // Protocol version of the block
+    pub prev_block_hash: [u8; 32], // Blake3 hash of the previous block's entire serialized content
+    pub merkle_root: [u8; 32],     // Blake3 hash of the Merkle tree root of all transactions
+    pub state_root: [u8; 32],      // Blake3 hash of the Merkle Patricia Trie root for UTXO set and ticket pool state
+    pub timestamp: u64,           // Unix epoch timestamp (seconds)
+    pub difficulty_target: u32,   // Compact form of the PoW difficulty target
+    pub nonce: u64,               // A 64-bit arbitrary number chosen by the miner
+}
+
+pub struct Block {
+    pub header: BlockHeader,      // BlockHeader containing PoW solution and metadata
+    pub ticket_votes: Vec<TicketVote>, // PoS votes confirming 'prev_block_hash'
+    pub transactions: Vec<Transaction>,// Validated transactions in this block
+}
+
+pub struct TicketVote {
+    pub ticket_id: [u8; 32],      // Unique ID (UTXO hash) of the locked PoS ticket
+    pub signature: [u8; 64],      // Ed25519 signature of `prev_block_hash`
+}
+
+pub struct Transaction {
+    pub version: u32,             // Transaction version
+    pub inputs: Vec<TxInput>,     // Transaction inputs
+    pub outputs: Vec<TxOutput>,   // Transaction outputs
+    pub lock_time: u32,           // Locktime for time-locked transactions
+}
+
+pub struct TxInput {
+    pub prev_out_hash: [u8; 32],  // Hash of transaction containing UTXO being spent
+    pub prev_out_index: u32,      // Index of UTXO in referenced transaction's outputs
+    pub script_sig: Vec<u8>,      // FerrisScript unlocking script
+    pub sequence: u32,            // Sequence number for RBF/relative locktime
+}
+
+pub struct TxOutput {
+    pub value: u64,               // Amount of RUST in satoshis
+    pub script_pubkey: Vec<u8>,   // FerrisScript locking script
+}
+4.0 TRANSACTION_MODEL: FERRISSCRIPT
+4.1 UTXO_MODEL
+TASK_ID: UTXO_001 | TYPE: Database_Optimization
+DESCRIPTION: Implement efficient UTXO database lookups.
+TASK_ID: UTXO_002 | TYPE: Mempool_Management
+DESCRIPTION: Develop a high-performance mempool for unconfirmed transactions.
+DETAIL: Prioritization by fee, concurrent access, removal on block inclusion/expiration.
+TASK_ID: UTXO_003 | TYPE: Scalability
+DESCRIPTION: Plan for UTXO set growth. Implement efficient database indexing.
+4.2 FERRISSCRIPT_SPECIFICATION
+TASK_ID: FSCR_001 | TYPE: Interpreter
+DESCRIPTION: Develop FerrisScript interpreter in rusty-consensus.
+TASK_ID: FSCR_002 | TYPE: Execution_Limits
+DESCRIPTION: Define and enforce strict script execution limits.
+DETAIL: Max Script Size (e.g., 10 KB), Max Opcode Count (e.g., 200), Max Stack Depth (e.g., 100), Max Signature Operations (e.g., 20 per TX).
+TASK_ID: FSCR_003 | TYPE: Test_Cases
+DESCRIPTION: Implement detailed test cases for each opcode and common script patterns (P2PKH, multisig).
+TASK_ID: FSCR_004 | TYPE: Versioning
+DESCRIPTION: Implement script versioning for future soft forks.
+TASK_ID: FSCR_005 | TYPE: Fee_Mechanism
+DESCRIPTION: Define and implement transaction fee mechanism (e.g., explicit per-byte fee, dynamic based on congestion). Miners collect fees.
+5.0 MASTERNODE_NETWORK
+CONCEPT: Provides advanced services, participates in security, requires RUST collateral.
+
+5.1 PROOF_OF_SERVICE: PoSe
+TASK_ID: POSE_001 | TYPE: Collateral_Management
+DESCRIPTION: Formalize masternode collateral amount (e.g., 10,000 $RUST) locked as specific UTXO.
+TASK_ID: POSE_002 | TYPE: Challenge_Protocol
+DESCRIPTION: Develop challenge-response protocol.
+DETAIL: Define message formats (block_hash, challenge_nonce, signature). Use secure libp2p messaging.
+TASK_ID: POSE_003 | TYPE: Slashing_Mechanisms
+DESCRIPTION: Implement penalties for PoSe failures (e.g., temporary deactivation, permanent slashing).
+DETAIL: Define percentage of collateral slashed (burned).
+5.2 NETWORK_SERVICES
+TASK_ID: NSVC_001 | TYPE: OxideSend_Protocol
+DESCRIPTION: Develop deterministic MN quorum selection for input locking.
+DETAIL: (e.g., 10-15 masternodes).
+DESCRIPTION: Implement input locking (M-of-N signatures from MNs on TX inputs).
+DESCRIPTION: Design client-side verification of MN input locks.
+DESCRIPTION: Implement slashing for OxideSend double-spend attempts.
+TASK_ID: NSVC_002 | TYPE: FerrousShield_Protocol
+DESCRIPTION: Design trust-minimized CoinJoin coordination.
+DETAIL: Multi-round protocol, blinded signatures/commitments to prevent MN deanonymization.
+DESCRIPTION: Implement queuing system for CoinJoin requests.
+DESCRIPTION: Define fee structure for FerrousShield.
+6.0 TOKENOMICS_EMISSION_SCHEDULE (UNCHANGED)
+MAX_SUPPLY: 260,000,000 RUST
+BLOCK_TIME: ~2.5 minutes
+EMISSION_SCHEDULE: Smooth decay (~12% annual block reward decrease).
+BLOCK_REWARD_ALLOCATION:
+30% PoW Miners
+35% PoS Stakers
+35% Masternode Operators
+TASK_ID: TKN_001 | TYPE: Implementation_Verification
+DESCRIPTION: Ensure precise implementation of emission schedule and allocation logic in rusty-consensus.
+7.0 NETWORKING_API_LAYERS
+7.1 PEER_TO_PEER_PROTOCOL
+TASK_ID: P2P_001 | TYPE: Connection_Management
+DESCRIPTION: Maintain healthy connection count (e.g., 8-16 outbound). Implement peer scoring (prioritize reliable, penalize misbehaving peers).
+TASK_ID: P2P_002 | TYPE: Message_Serialization
+DESCRIPTION: Use bincode for network message payloads.
+TASK_ID: P2P_003 | TYPE: DoS_Protection
+DESCRIPTION: Implement connection limits per IP. Rate limit message types.
+DETAIL: Implement basic firewall rules/gating for new connections.
+TASK_ID: P2P_004 | TYPE: NAT_Traversal
+DESCRIPTION: Leverage libp2p's UPnP, AutoNAT, Circuit Relay.
+TASK_ID: P2P_005 | TYPE: Bootstrap
+DESCRIPTION: Maintain list of stable seed nodes for initial connection.
+7.2 JSON_RPC_API
+TASK_ID: RPC_001 | TYPE: Documentation
+DESCRIPTION: Develop comprehensive RPC documentation (OpenAPI/Swagger).
+TASK_ID: RPC_002 | TYPE: Authentication
+DESCRIPTION: Implement secure authentication (API keys/token-based over HTTPS) for sensitive calls.
+TASK_ID: RPC_003 | TYPE: Authorization
+DESCRIPTION: Define granular permission levels (read-only, wallet-write, admin).
+TASK_ID: RPC_004 | TYPE: Input_Validation
+DESCRIPTION: Implement strict input validation for all RPC parameters.
+TASK_ID: RPC_005 | TYPE: Error_Handling
+DESCRIPTION: Return meaningful JSON-RPC 2.0 compliant error objects.
+TASK_ID: RPC_006 | TYPE: Interface_Types
+DESCRIPTION: Provide both HTTP and WebSocket RPC interfaces.
+8.0 ADVANCED_PROTOCOL_UPGRADES (POST_LAUNCH)
+CONCEPT: Major upgrades requiring detailed EIP-like specifications and on-chain governance activation.
+
+8.1 ON_CHAIN_GOVERNANCE: Homestead_Accord
+TASK_ID: GVN_001 | TYPE: Proposal_Specification
+DESCRIPTION: Define standardized on-chain format for proposals.
+DETAIL: proposal_id, proposer_address, voting_window, collateral_locked, title, description, ipfs_hash/url to full spec, hash_of_code_changes.
+TASK_ID: GVN_002 | TYPE: Voting_Logic
+DESCRIPTION: Implement vote_tx type.
+DETAIL: Track active PoS tickets/Masternodes for voting.
+DESCRIPTION: Implement quorum calculation (e.g., 60% active PoS, 75% active MNs participating).
+DESCRIPTION: Implement supermajority check (e.g., 75% "Yes" from both groups).
+TASK_ID: GVN_003 | TYPE: Penalties
+DESCRIPTION: Implement penalty for spammy/malicious proposals (collateral slashing).
+8.2 SIDECHAIN_FRAMEWORK: Ferrite
+TASK_ID: FERR_001 | TYPE: Two_Way_Peg_Protocol
+DESCRIPTION: Design peg_in and peg_out transaction types.
+DESCRIPTION: Implement BLS Threshold Signature Scheme (bls-signatures crate) for MN federation control (e.g., M-of-N for 2/3 of active MNs).
+DESCRIPTION: Design fraud proofs/challenge mechanisms for MN federation integrity.
+TASK_ID: FERR_002 | TYPE: Sidechain_VM_Integration
+DESCRIPTION: Research and select VM (EVM-compatible, WASM, or custom UTXO-based VM).
+TASK_ID: FERR_003 | TYPE: Inter_Sidechain_Comm
+DESCRIPTION: Consider standard for communication (light client proofs, IBC-like protocols).
+8.3 POST_QUANTUM_MIGRATION: QuantumGuard
+TASK_ID: QG_001 | TYPE: Crypto_Integration
+DESCRIPTION: Implement CRYSTALS-Dilithium signature scheme in rusty-crypto.
+TASK_ID: QG_002 | TYPE: Address_Versioning
+DESCRIPTION: Define new address prefixes/formats for Dilithium public keys.
+TASK_ID: QG_003 | TYPE: Hybrid_Signatures
+DESCRIPTION: Define new TX version allowing (Ed25519_sig, Dilithium_sig) pairs.
+DESCRIPTION: Implement validation logic for hybrid signatures.
+DESCRIPTION: Plan transition period and potential future hard fork for deprecation.
+TASK_ID: QG_004 | TYPE: Key_Derivation
+DESCRIPTION: Evaluate HD key derivation extension for quantum-resistant pairs.
+8.4 ADAPTIVE_BLOCK_SIZE
+TASK_ID: ABS_001 | TYPE: Algorithm_Implementation
+DESCRIPTION: Implement rolling window (e.g., last 2016 blocks) to calculate median block size.
+DESCRIPTION: Define adjustment factor (small percentage increase/decrease).
+DESCRIPTION: Set hard-coded safety limit (e.g., 32 MB / 64 MB).
+DESCRIPTION: Scale max signature operations proportionally with block size.
+TASK_ID: ABS_002 | TYPE: Testing
+DESCRIPTION: Rigorously test under various load conditions.
+9.0 SECURITY_AUDIT_TESTING_STRATEGY
+CONCEPT: Multi-layered approach for robust security.
+
+TASK_ID: SEC_001 | TYPE: CI/CD_Integration
+DESCRIPTION: Set up CI/CD pipelines for automated tests on PRs.
+TASK_ID: SEC_002 | TYPE: Fuzz_Testing
+DESCRIPTION: Integrate cargo-fuzz / libfuzzer for critical parsing/validation.
+DETAIL: Target network message parsing, crypto inputs, FerrisScript interpreter.
+TASK_ID: SEC_003 | TYPE: Static_Analysis
+DESCRIPTION: Enforce strict Clippy lints (deny(warnings)). Integrate Miri for runtime UB detection.
+TASK_ID: SEC_004 | TYPE: Code_Review_Standards
+DESCRIPTION: Establish strict code review guidelines and coding standards.
+TASK_ID: SEC_005 | TYPE: Dependency_Audits
+DESCRIPTION: Regularly run cargo-audit. Manually review critical dependencies.
+TASK_ID: SEC_006 | TYPE: Economic_Security_Analysis
+DESCRIPTION: Conduct ongoing analysis of incentives to deter attacks (e.g., 51% attack cost).
+TASK_ID: SEC_007 | TYPE: Incident_Response_Plan
+DESCRIPTION: Define roles, responsibilities, secure communication channels.
+DESCRIPTION: Plan for rapid hotfix deployment and graceful upgrades.
+TASK_ID: SEC_008 | TYPE: External_Audits
+DESCRIPTION: Schedule multiple independent security audits by reputable firms prior to Mainnet.
+TASK_ID: SEC_009 | TYPE: Formal_Verification
+DESCRIPTION: Investigate formal verification for critical consensus/crypto (long-term goal).
+10.0 DEVELOPER_TOOLING_ECOSYSTEM
+TASK_ID: DEV_001 | TYPE: Documentation_Suite
+DESCRIPTION: Develop comprehensive Rustdoc.
+DESCRIPTION: Create mdbook for developer guides, architecture, concepts.
+DESCRIPTION: Generate JSON-RPC API reference (OpenAPI/Swagger).
+DESCRIPTION: Formal FerrisScript specification.
+TASK_ID: DEV_002 | TYPE: Client_SDKs
+DESCRIPTION: Prioritize basic SDKs in Rust and Python.
+TASK_ID: DEV_003 | TYPE: Wallet_Applications
+DESCRIPTION: Develop full-featured rusty-cli wallet.
+DESCRIPTION: Develop cross-platform rusty-gui desktop wallet (e.g., Tauri/egui).
+TASK_ID: DEV_004 | TYPE: Block_Explorer
+DESCRIPTION: Build robust backend (indexing) and responsive frontend.
+TASK_ID: DEV_005 | TYPE: Testnet_Faucet
+DESCRIPTION: Implement simple testnet faucet.
+TASK_ID: DEV_006 | TYPE: Sidechain_VM_Planning
+DESCRIPTION: Plan for EVM-compatible or WASM VM for Ferrite sidechains to attract developers.
+11.0 NETWORK_RESILIENCE_STATE_MANAGEMENT
+TASK_ID: NRES_001 | TYPE: State_Pruning
+DESCRIPTION: Design a state pruning strategy (e.g., historical UTXO set pruning with checkpoints).
+DESCRIPTION: Define archival node requirements.
+TASK_ID: NRES_002 | TYPE: Fast_IBD
+DESCRIPTION: Implement Initial Block Download (IBD) optimizations.
+DETAIL: UTXO set snapshots + state_root verification. Compact Block Relay (BIP152-like).
+TASK_ID: NRES_003 | TYPE: Peer_Bootstrapping
+DESCRIPTION: Maintain stable seed nodes.
+DESCRIPTION: Implement robust peer management to prevent network partitioning.
+TASK_ID: NRES_004 | TYPE: Network_Monitoring
+DESCRIPTION: Implement internal metrics collection and exposure (Prometheus).
+12.0 PROJECT_ROADMAP
+Phase 1: GENESIS (Q3 2025)
+
+TASK_ID: RM_P1_001 | DATE: July 2025
+ACTION: Open-source codebase (GitHub).
+ACTION: Launch Public Testnet (rustyd binaries, Testnet explorer, faucet).
+ACTION: Launch initial rusty-cli wallet.
+ACTION: Initiate Bug Bounty Program.
+ACTION: Establish core community channels.
+TASK_ID: RM_P1_002 | DATE: Aug/Sep 2025
+ACTION: Intensive community testing.
+ACTION: Network stabilization (bug fixes, performance).
+ACTION: Commence formal external security audit.
+ACTION: Refine documentation/developer resources.
+Phase 2: HOMESTEAD (TBA - Post-Testnet)
+
+TASK_ID: RM_P2_001 | DATE: TBA (Post-Testnet)
+ACTION: Announce Mainnet launch date (contingent on security audits, testnet stability, performance).
+ACTION: Mainnet Genesis Block mining.
+Phase 3: FORGE (Post-Mainnet Launch)
+
+TASK_ID: RM_P3_001 | DATE: Post-Mainnet
+ACTION: Activate/monitor OxideSend and FerrousShield services.
+ACTION: Initiate exchange listing processes.
+ACTION: Launch rusty-gui desktop wallet.
+ACTION: Begin development of client SDKs (Python, JS).
+ACTION: Proactively support community projects.
+Phase 4: METROPOLIS (2026 and Beyond)
+
+TASK_ID: RM_P4_001 | DATE: 2026+
+ACTION: Develop/propose Homestead Accord on-chain governance.
+ACTION: Develop/propose Ferrite sidechain framework (BLS, 2WP).
+ACTION: Develop/propose QuantumGuard migration (Dilithium, hybrid signatures).
+ACTION: Implement/test Adaptive Block Size algorithm.
+ACTION: Explore Layer-2 scalability solutions.
+ACTION: Drive continuous innovation via on-chain governance.

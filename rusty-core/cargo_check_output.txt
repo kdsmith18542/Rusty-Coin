@@ -1,0 +1,413 @@
+    Checking rusty-core v0.1.0 (C:\Users\Keith\Rusty-Coin\rusty-core)
+error[E0432]: unresolved imports `rusty_types::block`, `rusty_types::transaction`
+ --> src\consensus\blockchain.rs:5:19
+  |
+5 | use rusty_types::{block::Block, transaction::{OutPoint, Transaction, TxOutput}};
+  |                   ^^^^^         ^^^^^^^^^^^ could not find `transaction` in `rusty_types`
+  |                   |
+  |                   could not find `block` in `rusty_types`
+
+error[E0432]: unresolved import `rusty_types::block`
+ --> src\consensus\pos.rs:3:18
+  |
+3 | use rusty_types::block::{BlockHeader, TicketVote};
+  |                  ^^^^^ could not find `block` in `rusty_types`
+
+error[E0432]: unresolved import `rusty_types::transaction`
+ --> src\consensus\pos.rs:4:18
+  |
+4 | use rusty_types::transaction::{Transaction, TxOutput};
+  |                  ^^^^^^^^^^^ could not find `transaction` in `rusty_types`
+
+error[E0432]: unresolved import `rusty_types::block`
+ --> src\consensus\pow.rs:3:18
+  |
+3 | use rusty_types::block::BlockHeader;
+  |                  ^^^^^ could not find `block` in `rusty_types`
+
+error[E0432]: unresolved imports `rusty_types::block`, `rusty_types::transaction`
+ --> src\consensus\state.rs:1:19
+  |
+1 | use rusty_types::{block::Block, transaction::{OutPoint, TxOutput}};
+  |                   ^^^^^         ^^^^^^^^^^^ could not find `transaction` in `rusty_types`
+  |                   |
+  |                   could not find `block` in `rusty_types`
+
+error[E0432]: unresolved import `rusty_types::block`
+ --> src\network\sync.rs:4:18
+  |
+4 | use rusty_types::block::Block;
+  |                  ^^^^^ could not find `block` in `rusty_types`
+
+error[E0432]: unresolved import `rusty_types::transaction`
+ --> src\script\script_engine.rs:4:18
+  |
+4 | use rusty_types::transaction::{Transaction, TxOutput};
+  |                  ^^^^^^^^^^^ could not find `transaction` in `rusty_types`
+
+warning: unused import: `std::collections::HashMap`
+ --> src\consensus\blockchain.rs:7:5
+  |
+7 | use std::collections::HashMap;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused import: `blake3::Hasher`
+ --> src\consensus\pos.rs:5:5
+  |
+5 | use blake3::Hasher;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `blake3::Hasher`
+ --> src\consensus\pow.rs:5:5
+  |
+5 | use blake3::Hasher;
+  |     ^^^^^^^^^^^^^^
+
+warning: unused import: `rand::rngs::StdRng`
+ --> src\consensus\pow.rs:6:5
+  |
+6 | use rand::rngs::StdRng;
+  |     ^^^^^^^^^^^^^^^^^^
+
+warning: unused imports: `Rng` and `SeedableRng`
+ --> src\consensus\pow.rs:7:12
+  |
+7 | use rand::{Rng, SeedableRng};
+  |            ^^^  ^^^^^^^^^^^
+
+warning: variant `OP_0` should have an upper camel case name
+ --> src\script\opcode.rs:6:5
+  |
+6 |     OP_0 = 0x00,
+  |     ^^^^ help: convert the identifier to upper camel case: `Op0`
+  |
+  = note: `#[warn(non_camel_case_types)]` on by default
+
+warning: variant `OP_PUSHDATA1` should have an upper camel case name
+ --> src\script\opcode.rs:7:5
+  |
+7 |     OP_PUSHDATA1 = 0x4C,
+  |     ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `OpPushdata1`
+
+warning: variant `OP_PUSHDATA2` should have an upper camel case name
+ --> src\script\opcode.rs:8:5
+  |
+8 |     OP_PUSHDATA2 = 0x4D,
+  |     ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `OpPushdata2`
+
+warning: variant `OP_PUSHDATA4` should have an upper camel case name
+ --> src\script\opcode.rs:9:5
+  |
+9 |     OP_PUSHDATA4 = 0x4E,
+  |     ^^^^^^^^^^^^ help: convert the identifier to upper camel case: `OpPushdata4`
+
+warning: variant `OP_1` should have an upper camel case name
+  --> src\script\opcode.rs:10:5
+   |
+10 |     OP_1 = 0x51,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op1`
+
+warning: variant `OP_2` should have an upper camel case name
+  --> src\script\opcode.rs:11:5
+   |
+11 |     OP_2 = 0x52,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op2`
+
+warning: variant `OP_3` should have an upper camel case name
+  --> src\script\opcode.rs:12:5
+   |
+12 |     OP_3 = 0x53,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op3`
+
+warning: variant `OP_4` should have an upper camel case name
+  --> src\script\opcode.rs:13:5
+   |
+13 |     OP_4 = 0x54,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op4`
+
+warning: variant `OP_5` should have an upper camel case name
+  --> src\script\opcode.rs:14:5
+   |
+14 |     OP_5 = 0x55,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op5`
+
+warning: variant `OP_6` should have an upper camel case name
+  --> src\script\opcode.rs:15:5
+   |
+15 |     OP_6 = 0x56,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op6`
+
+warning: variant `OP_7` should have an upper camel case name
+  --> src\script\opcode.rs:16:5
+   |
+16 |     OP_7 = 0x57,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op7`
+
+warning: variant `OP_8` should have an upper camel case name
+  --> src\script\opcode.rs:17:5
+   |
+17 |     OP_8 = 0x58,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op8`
+
+warning: variant `OP_9` should have an upper camel case name
+  --> src\script\opcode.rs:18:5
+   |
+18 |     OP_9 = 0x59,
+   |     ^^^^ help: convert the identifier to upper camel case: `Op9`
+
+warning: variant `OP_10` should have an upper camel case name
+  --> src\script\opcode.rs:19:5
+   |
+19 |     OP_10 = 0x5A,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op10`
+
+warning: variant `OP_11` should have an upper camel case name
+  --> src\script\opcode.rs:20:5
+   |
+20 |     OP_11 = 0x5B,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op11`
+
+warning: variant `OP_12` should have an upper camel case name
+  --> src\script\opcode.rs:21:5
+   |
+21 |     OP_12 = 0x5C,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op12`
+
+warning: variant `OP_13` should have an upper camel case name
+  --> src\script\opcode.rs:22:5
+   |
+22 |     OP_13 = 0x5D,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op13`
+
+warning: variant `OP_14` should have an upper camel case name
+  --> src\script\opcode.rs:23:5
+   |
+23 |     OP_14 = 0x5E,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op14`
+
+warning: variant `OP_15` should have an upper camel case name
+  --> src\script\opcode.rs:24:5
+   |
+24 |     OP_15 = 0x5F,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op15`
+
+warning: variant `OP_16` should have an upper camel case name
+  --> src\script\opcode.rs:25:5
+   |
+25 |     OP_16 = 0x60,
+   |     ^^^^^ help: convert the identifier to upper camel case: `Op16`
+
+warning: variant `OP_VERIFY` should have an upper camel case name
+  --> src\script\opcode.rs:28:5
+   |
+28 |     OP_VERIFY = 0x69,
+   |     ^^^^^^^^^ help: convert the identifier to upper camel case: `OpVerify`
+
+warning: variant `OP_DUP` should have an upper camel case name
+  --> src\script\opcode.rs:31:5
+   |
+31 |     OP_DUP = 0x76,
+   |     ^^^^^^ help: convert the identifier to upper camel case: `OpDup`
+
+warning: variant `OP_HASH160` should have an upper camel case name
+  --> src\script\opcode.rs:34:5
+   |
+34 |     OP_HASH160 = 0xA9,
+   |     ^^^^^^^^^^ help: convert the identifier to upper camel case: `OpHash160`
+
+warning: variant `OP_CHECKSIG` should have an upper camel case name
+  --> src\script\opcode.rs:35:5
+   |
+35 |     OP_CHECKSIG = 0xAC,
+   |     ^^^^^^^^^^^ help: convert the identifier to upper camel case: `OpChecksig`
+
+warning: variant `OP_CHECKMULTISIG` should have an upper camel case name
+  --> src\script\opcode.rs:36:5
+   |
+36 |     OP_CHECKMULTISIG = 0xAE,
+   |     ^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `OpCheckmultisig`
+
+warning: variant `OP_CHECKLOCKTIMEVERIFY` should have an upper camel case name
+  --> src\script\opcode.rs:39:5
+   |
+39 |     OP_CHECKLOCKTIMEVERIFY = 0xB1,
+   |     ^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to upper camel case: `OpChecklocktimeverify`
+
+error[E0599]: no function or associated item named `new` found for struct `blake3::Hash` in the current scope
+   --> src\consensus\blockchain.rs:23:38
+    |
+23  |             .unwrap_or_else(|| Hash::new([0; 32])); // Genesis block hash or default
+    |                                      ^^^ function or associated item not found in `Hash`
+    |
+note: if you're trying to build a new `blake3::Hash` consider using one of the following associated functions:
+      blake3::Hash::from_bytes
+      blake3::Hash::from_slice
+      blake3::Hash::from_hex
+   --> C:\Users\Keith\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\blake3-1.8.2\src\lib.rs:254:5
+    |
+254 |     pub const fn from_bytes(bytes: [u8; OUT_LEN]) -> Self {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+261 |     pub fn from_slice(bytes: &[u8]) -> Result<Self, core::array::TryFromSliceError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+292 |     pub fn from_hex(hex: impl AsRef<[u8]>) -> Result<Self, HexError> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+help: there is a method `ne` with a similar name
+    |
+23  -             .unwrap_or_else(|| Hash::new([0; 32])); // Genesis block hash or default
+23  +             .unwrap_or_else(|| Hash::ne([0; 32])); // Genesis block hash or default
+    |
+
+error[E0308]: mismatched types
+   --> src\consensus\blockchain.rs:36:33
+    |
+36  |                 .get_block_hash(current_height - 1)
+    |                  -------------- ^^^^^^^^^^^^^^^^^^ expected `u32`, found `u64`
+    |                  |
+    |                  arguments to this method are incorrect
+    |
+note: method defined here
+   --> src\consensus\state.rs:159:12
+    |
+159 |     pub fn get_block_hash(&self, height: u32) -> Result<Option<Hash>, String> {
+    |            ^^^^^^^^^^^^^^        -----------
+help: you can convert a `u64` to a `u32` and panic if the converted value doesn't fit
+    |
+36  |                 .get_block_hash((current_height - 1).try_into().unwrap())
+    |                                 +                  +++++++++++++++++++++
+
+error[E0308]: mismatched types
+   --> src\consensus\blockchain.rs:55:29
+    |
+55  |             .put_block_hash(current_height, &block.header.calculate_hash().into())
+    |              -------------- ^^^^^^^^^^^^^^ expected `u32`, found `u64`
+    |              |
+    |              arguments to this method are incorrect
+    |
+note: method defined here
+   --> src\consensus\state.rs:149:12
+    |
+149 |     pub fn put_block_hash(&self, height: u32, hash: &Hash) -> Result<(), String> {
+    |            ^^^^^^^^^^^^^^        -----------
+help: you can convert a `u64` to a `u32` and panic if the converted value doesn't fit
+    |
+55  |             .put_block_hash(current_height.try_into().unwrap(), &block.header.calculate_hash().into())
+    |                                           ++++++++++++++++++++
+
+error[E0277]: the trait bound `blake3::Hash: Deserialize<'_>` is not satisfied
+   --> src\consensus\state.rs:96:34
+    |
+96  |                 let hash: Hash = bincode::deserialize(&value)
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `blake3::Hash`
+    |
+    = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `blake3::Hash` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `Deserialize<'de>`:
+              &'a Path
+              &'a [u8]
+              &'a serde_bytes::ByteArray<N>
+              &'a serde_bytes::Bytes
+              &'a str
+              ()
+              (T,)
+              (T0, T1)
+            and 146 others
+note: required by a bound in `bincode::deserialize`
+   --> C:\Users\Keith\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bincode-1.3.3\src\lib.rs:179:8
+    |
+177 | pub fn deserialize<'a, T>(bytes: &'a [u8]) -> Result<T>
+    |        ----------- required by a bound in this function
+178 | where
+179 |     T: serde::de::Deserialize<'a>,
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `deserialize`
+
+error[E0277]: the trait bound `blake3::Hash: Deserialize<'_>` is not satisfied
+   --> src\consensus\state.rs:140:34
+    |
+140 |                 let hash: Hash = bincode::deserialize(&value)
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `blake3::Hash`
+    |
+    = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `blake3::Hash` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `Deserialize<'de>`:
+              &'a Path
+              &'a [u8]
+              &'a serde_bytes::ByteArray<N>
+              &'a serde_bytes::Bytes
+              &'a str
+              ()
+              (T,)
+              (T0, T1)
+            and 146 others
+note: required by a bound in `bincode::deserialize`
+   --> C:\Users\Keith\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bincode-1.3.3\src\lib.rs:179:8
+    |
+177 | pub fn deserialize<'a, T>(bytes: &'a [u8]) -> Result<T>
+    |        ----------- required by a bound in this function
+178 | where
+179 |     T: serde::de::Deserialize<'a>,
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `deserialize`
+
+error[E0277]: the trait bound `blake3::Hash: Serialize` is not satisfied
+   --> src\consensus\state.rs:151:51
+    |
+151 |         let encoded: Vec<u8> = bincode::serialize(hash)
+    |                                ------------------ ^^^^ the trait `Serialize` is not implemented for `blake3::Hash`
+    |                                |
+    |                                required by a bound introduced by this call
+    |
+    = note: for local types consider adding `#[derive(serde::Serialize)]` to your `blake3::Hash` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `Serialize`:
+              &'a T
+              &'a mut T
+              ()
+              (T,)
+              (T0, T1)
+              (T0, T1, T2)
+              (T0, T1, T2, T3)
+              (T0, T1, T2, T3, T4)
+            and 134 others
+note: required by a bound in `bincode::serialize`
+   --> C:\Users\Keith\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bincode-1.3.3\src\lib.rs:108:8
+    |
+106 | pub fn serialize<T: ?Sized>(value: &T) -> Result<Vec<u8>>
+    |        --------- required by a bound in this function
+107 | where
+108 |     T: serde::Serialize,
+    |        ^^^^^^^^^^^^^^^^ required by this bound in `serialize`
+
+error[E0277]: the trait bound `blake3::Hash: Deserialize<'_>` is not satisfied
+   --> src\consensus\state.rs:163:34
+    |
+163 |                 let hash: Hash = bincode::deserialize(&value)
+    |                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the trait `Deserialize<'_>` is not implemented for `blake3::Hash`
+    |
+    = note: for local types consider adding `#[derive(serde::Deserialize)]` to your `blake3::Hash` type
+    = note: for types from other crates check whether the crate offers a `serde` feature flag
+    = help: the following other types implement trait `Deserialize<'de>`:
+              &'a Path
+              &'a [u8]
+              &'a serde_bytes::ByteArray<N>
+              &'a serde_bytes::Bytes
+              &'a str
+              ()
+              (T,)
+              (T0, T1)
+            and 146 others
+note: required by a bound in `bincode::deserialize`
+   --> C:\Users\Keith\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\bincode-1.3.3\src\lib.rs:179:8
+    |
+177 | pub fn deserialize<'a, T>(bytes: &'a [u8]) -> Result<T>
+    |        ----------- required by a bound in this function
+178 | where
+179 |     T: serde::de::Deserialize<'a>,
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^ required by this bound in `deserialize`
+
+Some errors have detailed explanations: E0277, E0308, E0432, E0599.
+For more information about an error, try `rustc --explain E0277`.
+warning: `rusty-core` (lib) generated 31 warnings
+error: could not compile `rusty-core` (lib) due to 14 previous errors; 31 warnings emitted

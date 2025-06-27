@@ -1,0 +1,35 @@
+[package]
+name = "rusty-network"
+version = "0.1.0"
+edition = "2021"
+description = "P2P networking layer for Rusty Coin blockchain"
+repository = "https://github.com/rusty-coin/rusty-coin"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+# libp2p and its components
+libp2p = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Hashing
+blake3 = { workspace = true }
+# Logging
+log = { workspace = true }
+env_logger = "0.10"
+# Error handling
+thiserror = { workspace = true }
+# Date and Time
+chrono = { version = "0.4", features = ["serde"] }
+# Random number generation
+rand = { workspace = true }
+# Local crates
+rusty-types = { path = "../rusty-types" }
+rusty-consensus = { path = "../rusty-consensus" }
+
+[dev-dependencies]
+tempfile = "3.2"
+hex-literal = "0.4"

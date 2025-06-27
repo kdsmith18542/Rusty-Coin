@@ -1,0 +1,14 @@
+[package]
+name = "rusty-shared-types"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blake3 = { workspace = true, features = ["serde"] }
+serde = { workspace = true }
+serde_bytes = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+hex = { workspace = true }
+ed25519-dalek = { workspace = true, features = ["serde"] }
+
