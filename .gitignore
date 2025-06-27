@@ -3,11 +3,28 @@ target/
 **/target/
 Cargo.lock
 
-# Node.js
-node_modules/
-package-lock.json
+# Test and benchmark results
+**/target/debug/
+**/target/release/
+**/target/coverage/
+**/target/prof/
+*.profraw
+*.profdata
 
-# IDE
+# Fuzzing artifacts
+fuzz/artifacts/
+**/*.fuzz/
+**/*.fuzz-target/
+corpus/
+crash-*
+
+# Test coverage files
+**/coverage/
+*.profdata
+*.profraw
+*.lcov
+
+# IDE and editor files
 .idea/
 .vscode/
 *.swp
@@ -26,3 +43,32 @@ Thumbs.db
 # Local development
 .env
 *.local
+
+# Build artifacts
+**/build/
+**/out/
+
+# Dependencies
+node_modules/
+package-lock.json
+
+# Test temporary files
+test-results/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Rust test artifacts
+**/*.rs.bk
+**/target/
+
+# Benchmark results
+**/target/criterion/
+**/target/benches/
+
+# Fuzzing corpora and artifacts
+**/corpus/
+**/artifacts/
+
+# Local configuration overrides
+.local-*
