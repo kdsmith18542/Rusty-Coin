@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "rusty-consensus",
     "rusty-core",
+    "rusty-core-types",
     "rusty-crypto",
     "rusty-governance",
     "rusty-jsonrpc",
@@ -43,7 +44,7 @@ group = "0.13.0"             # Use newer version that doesn't have yanked depend
 # Network dependencies
 tokio = { version = "1.0", features = ["full"] }
 # libp2p with minimal required features
-libp2p = { version = "0.53.0", default-features = false, features = [
+libp2p = { version = "0.54.1", default-features = false, features = [
     "tcp",
     "dns",
     "yamux",
@@ -52,8 +53,8 @@ libp2p = { version = "0.53.0", default-features = false, features = [
     "mdns",
     "identify",
     "ping",
-    "macros",
-    "serde"
+    "gossipsub",
+    "request-response"
 ]}
 futures = { version = "0.3", features = ["thread-pool"] }
 
@@ -76,3 +77,8 @@ base64ct = "1.7.1"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[profile.fuzz]
+inherits = "release"
+debug = 1
+overflow-checks = false

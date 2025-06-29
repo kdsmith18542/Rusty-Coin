@@ -8,11 +8,10 @@ use std::collections::HashMap;
 use log::{info, warn, error, debug};
 use serde::{Serialize, Deserialize};
 
-use rusty_shared_types::{Hash, Transaction, OutPoint};
+use rusty_shared_types::{Hash, Transaction};
 use rusty_shared_types::masternode::MasternodeID;
-use crate::sidechain::{
-    SidechainBlock, SidechainTransaction, CrossChainTransaction, 
-    FraudType, FraudEvidence, SidechainBlockHeader, VMExecutionData
+use crate::sidechain::{FraudProof, FraudEvidence, FraudType, SidechainBlock, SidechainTransaction, CrossChainTransaction, 
+    SidechainBlockHeader, VMExecutionData,
 };
 
 /// Configuration for fraud proof system
@@ -68,7 +67,7 @@ pub struct FraudProofChallenge {
     /// Unique challenge ID
     pub challenge_id: Hash,
     /// The fraud proof being challenged
-    pub fraud_proof: super::FraudProof,
+    pub fraud_proof: FraudProof,
     /// Current status of the challenge
     pub status: FraudProofStatus,
     /// Block height when challenge was submitted
@@ -190,7 +189,7 @@ impl FraudProofManager {
     /// Submit a fraud proof challenge
     pub fn submit_fraud_proof(
         &mut self,
-        fraud_proof: super::FraudProof,
+        fraud_proof: FraudProof,
         challenger_bond: u64,
     ) -> Result<Hash, String> {
         // Validate challenge bond
@@ -331,7 +330,7 @@ impl FraudProofManager {
     /// Verify a fraud proof against responses
     fn verify_fraud_proof(
         &self,
-        fraud_proof: &super::FraudProof,
+        fraud_proof: &FraudProof,
         responses: &[FraudProofResponse],
     ) -> Result<FraudProofVerdict, String> {
         match fraud_proof.fraud_type {
@@ -356,7 +355,7 @@ impl FraudProofManager {
     /// Verify state transition fraud
     fn verify_state_transition_fraud(
         &self,
-        fraud_proof: &super::FraudProof,
+        fraud_proof: &FraudProof,
         _responses: &[FraudProofResponse],
     ) -> Result<FraudProofVerdict, String> {
         // In a real implementation, this would:
@@ -398,7 +397,7 @@ impl FraudProofManager {
     /// Verify double spending fraud
     fn verify_double_spending_fraud(
         &self,
-        fraud_proof: &super::FraudProof,
+        fraud_proof: &FraudProof,
         _responses: &[FraudProofResponse],
     ) -> Result<FraudProofVerdict, String> {
         // Simplified double spending verification
@@ -433,7 +432,7 @@ impl FraudProofManager {
     /// Verify cross-chain fraud
     fn verify_cross_chain_fraud(
         &self,
-        fraud_proof: &super::FraudProof,
+        fraud_proof: &FraudProof,
         _responses: &[FraudProofResponse],
     ) -> Result<FraudProofVerdict, String> {
         // Simplified cross-chain fraud verification
@@ -468,7 +467,7 @@ impl FraudProofManager {
     /// Verify signature fraud
     fn verify_signature_fraud(
         &self,
-        fraud_proof: &super::FraudProof,
+        fraud_proof: &FraudProof,
         _responses: &[FraudProofResponse],
     ) -> Result<FraudProofVerdict, String> {
         // Simplified signature fraud verification
@@ -503,7 +502,7 @@ impl FraudProofManager {
     /// Verify VM execution fraud
     fn verify_vm_execution_fraud(
         &self,
-        fraud_proof: &super::FraudProof,
+        fraud_proof: &FraudProof,
         _responses: &[FraudProofResponse],
     ) -> Result<FraudProofVerdict, String> {
         // Simplified VM execution fraud verification
@@ -571,7 +570,7 @@ impl FraudProofManager {
     }
 
     /// Generate challenge ID from fraud proof
-    fn generate_challenge_id(&self, fraud_proof: &super::FraudProof) -> Hash {
+    fn generate_challenge_id(&self, fraud_proof: &FraudProof) -> Hash {
         let mut data = Vec::new();
         data.extend_from_slice(&fraud_proof.hash());
         let mut height_bytes = [0u8; 8];
@@ -614,11 +613,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::DoubleSpending,
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::DoubleSpending,
             fraud_block_height: 0, // Placeholder: actual block height where fraud occurred
             fraud_tx_index: None, // Placeholder: transaction index if applicable
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&(&double_spend_tx, &original_tx))
@@ -641,11 +640,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::UnauthorizedSignature,
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::UnauthorizedSignature,
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Placeholder
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&(&masternode_id, &signed_message, &signature))
@@ -666,11 +665,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidStateTransition, // Assuming registration is a state transition
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidStateTransition, // Assuming registration is a state transition
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Placeholder
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&masternode_registration_tx)
@@ -692,11 +691,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidStateTransition,
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidStateTransition,
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Placeholder
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&(&masternode_id, &invalid_state_data))
@@ -718,11 +717,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidStateTransition, // Assuming inactivity leads to state transition
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidStateTransition, // Assuming inactivity leads to state transition
             fraud_block_height: last_seen_block, // Use last_seen_block as a proxy
             fraud_tx_index: None, // Not applicable
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&masternode_id)
@@ -743,11 +742,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidCrossChainTx,
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidCrossChainTx,
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Placeholder
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&cross_chain_tx)
@@ -768,11 +767,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidVMExecution,
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidVMExecution,
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Placeholder
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&vm_execution_data)
@@ -795,11 +794,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidStateTransition, // General category for rule violations
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidStateTransition, // General category for rule violations
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Placeholder
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&(&violation_description, &violating_transaction, &violating_block))
@@ -820,11 +819,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidStateTransition, // Assuming invalid header leads to invalid state
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidStateTransition, // Assuming invalid header leads to invalid state
             fraud_block_height: block_header.height, // Use block height from header
             fraud_tx_index: None, // Not applicable
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&block_header)
@@ -846,11 +845,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::UnauthorizedSignature, // Missing signatures imply unauthorized actions
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::UnauthorizedSignature, // Missing signatures imply unauthorized actions
             fraud_block_height: 0, // Placeholder
             fraud_tx_index: None, // Not applicable
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&(&block_hash, &missing_signatures_count))
@@ -872,11 +871,11 @@ impl FraudProofManager {
         reporter_id: [u8; 32],
         challenge_bond: u64,
     ) -> Result<Hash, String> {
-        let fraud_proof = super::FraudProof {
-            fraud_type: super::FraudType::InvalidStateTransition, // Incorrect PoS leads to invalid state
+        let fraud_proof = FraudProof {
+            fraud_type: FraudType::InvalidStateTransition, // Incorrect PoS leads to invalid state
             fraud_block_height: block_header.height,
             fraud_tx_index: None, // Not applicable
-            evidence: super::FraudEvidence {
+            evidence: FraudEvidence {
                 pre_state: vec![], // Placeholder
                 post_state: vec![], // Placeholder
                 fraudulent_operation: bincode::serialize(&(&block_header, &invalid_ticket_votes))

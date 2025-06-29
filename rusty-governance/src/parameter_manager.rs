@@ -4,13 +4,13 @@
 //! governance proposals, including validation, scheduling, and runtime updates.
 
 use std::collections::HashMap;
-use log::{info, warn, error, debug};
+use log::info;
+use serde::{Serialize, Deserialize};
 
 use rusty_shared_types::{
     Hash, ConsensusParams,
     governance::{GovernanceProposal, ProposalType},
 };
-use rusty_core::consensus::state::BlockchainState;
 
 /// Represents a parameter change that can be applied to the system
 #[derive(Debug, Clone, PartialEq)]

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use jsonrpsee::proc_macros::rpc;
 
-#[rpc(server, client, namespace = "rusty_coin")]
+#[rpc(server, namespace = "rusty_coin")]
 pub trait RustyRpc {
     #[method(name = "get_block_count")]
     async fn get_block_count(&self) -> Result<u64, jsonrpsee::core::Error>;

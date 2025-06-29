@@ -1,11 +1,9 @@
 use crate::script::script_engine::ScriptEngine;
 use rusty_shared_types::{
-    Block, Transaction, TxOutput, Hash, PublicKey, Signature as ExternalSignature,
-    ConsensusParams, BlockHeader, OutPoint, Ticket, TicketId,
-    TransactionSignature,
-    governance::{GovernanceProposal, GovernanceVote},
-    masternode::{MasternodeList, MasternodeID, PoSeChallenge, PoSeResponse,
-        MasternodeSlashTx, SlashingReason, MasternodeNonParticipationProof, MasternodeMaliciousProof}
+    Block, Transaction, TxOutput, Hash,
+    ConsensusParams, OutPoint, Ticket, TicketId,
+    masternode::{MasternodeList, MasternodeID, PoSeChallenge,
+        SlashingReason, MasternodeNonParticipationProof, MasternodeMaliciousProof}
 };
 use crate::consensus::pos::LiveTicketsPool;
 use crate::consensus::utxo_set::UtxoSet;
@@ -13,20 +11,20 @@ use crate::consensus::error::ConsensusError;
 
 use primitive_types::U256;
 use crate::consensus::pow::{calculate_new_target, calculate_target};
-use crate::constants::{COINBASE_MATURITY_PERIOD_BLOCKS, LOCKTIME_THRESHOLD, MAX_BLOCK_SIZE};
+use crate::constants::{COINBASE_MATURITY_PERIOD_BLOCKS, LOCKTIME_THRESHOLD};
 use crate::consensus::state::BlockchainState;
 use crate::consensus::governance_state::{ActiveProposals, ProposalOutcome};
-use rusty_crypto::signature::{verify_signature, sign_message};
-use ed25519_dalek::{Verifier, Signature, Signature as Ed25519Signature, Keypair as Ed25519Keypair, PublicKey as VerifyingKey};
+use rusty_crypto::signature::verify_signature;
+use ed25519_dalek::{Verifier, Signature, PublicKey as VerifyingKey};
 use rusty_crypto::keypair::RustyKeyPair;
 use crate::audit_log;
-use log::{info, warn, error};
-use rand::rngs::OsRng;
+use log::info;
+
 use rand::RngCore;
 use rand::Rng;
 use rand::distributions::{Distribution, Uniform};
 use rusty_shared_types::masternode::MasternodeID as SharedMasternodeID;
-use rusty_shared_types::MasternodeID as LocalMasternodeID;
+
 use std::convert::TryInto;
 
 use rand::rngs::ThreadRng;
@@ -34,7 +32,7 @@ use rand::thread_rng;
 use crate::network::sync_manager::SyncManager;
 use blake3;
 use std::sync::{Arc, Mutex};
-use std::path::PathBuf;
+
 use crate::mempool::Mempool;
 
 /// Generate a PoSe challenge for a masternode
@@ -258,8 +256,11 @@ impl Blockchain {
         let total_fees: u64 = block.transactions.iter()
             .map(|tx| {
         let input_value: u64 = tx.get_inputs().iter()
-            .filter_map(|input| self.utxo_set.get_utxo(&input.previous_output)
-                .map(|utxo| utxo.output.value))
+            .filter_map(|input| {
+                let outpoint = input.previous_output.clone();
+                self.utxo_set.get_utxo(&outpoint)
+                .map(|utxo| utxo.output.value)
+            })
             .sum();
         let output_value: u64 = tx.get_outputs().iter().map(|o| o.value).sum();
                 input_value.saturating_sub(output_value)
@@ -383,12 +384,13 @@ impl Blockchain {
 
         // Validate inputs (referencing existing UTXOs)
         for input in tx.get_inputs() {
-            let utxo = self.utxo_set.get_utxo(&input.previous_output)
-                .ok_or(ConsensusError::MissingPreviousOutput(input.previous_output.clone()))?;
+            let outpoint = input.previous_output.clone();
+            let utxo = self.utxo_set.get_utxo(&outpoint)
+                .ok_or(ConsensusError::MissingPreviousOutput(outpoint.clone()))?;
 
             // Check coinbase maturity
             if utxo.is_coinbase && (current_block_height - utxo.creation_height < COINBASE_MATURITY_PERIOD_BLOCKS as u64) {
-                return Err(ConsensusError::ImmatureTicket(format!("Coinbase UTXO {:?} is not yet mature", input.previous_output)));
+                return Err(ConsensusError::ImmatureTicket(format!("Coinbase UTXO {:?} is not yet mature", outpoint)));
             }
 
             // Validate scriptSigs and scriptPubKeys
@@ -396,13 +398,16 @@ impl Blockchain {
             let mut script_engine = ScriptEngine::new();
             let tx_hash = tx.txid();
             if script_engine.execute_standard_script(&input.script_sig, &utxo.output.script_pubkey, tx, 0).is_err() {
-                 return Err(ConsensusError::InvalidScript(format!("Script verification failed for input {:?}", input.previous_output)));
+                 return Err(ConsensusError::InvalidScript(format!("Script verification failed for input {:?}", outpoint)));
             }
         }
 
         // Validate transaction fees (inputs sum >= outputs sum + fee)
         let total_input_value: u64 = tx.get_inputs().iter()
-            .filter_map(|input| self.utxo_set.get_utxo(&input.previous_output).map(|utxo| utxo.output.value))
+            .filter_map(|input| {
+                let outpoint = input.previous_output.clone();
+                self.utxo_set.get_utxo(&outpoint).map(|utxo| utxo.output.value)
+            })
             .sum();
         let total_output_value: u64 = tx.get_outputs().iter().map(|output| output.value).sum();
         if total_input_value < total_output_value + tx.get_fee() {

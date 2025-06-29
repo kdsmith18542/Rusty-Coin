@@ -1,15 +1,15 @@
 //! Synchronization manager for initial block download, header-first sync, and compact block relay.
 
-use std::sync::{Arc, Mutex};
-use crate::consensus::blockchain::Blockchain;
+
+
 use crate::consensus::error::ConsensusError;
-use rusty_shared_types::{Block, BlockHeader, Hash, MasternodeIdentity, Transaction};
-use async_trait::async_trait;
+use rusty_shared_types::{Block, Hash};
+
 use std::collections::HashMap;
-use tokio::time::{timeout, Duration};
-use libp2p::futures::StreamExt;
-use std::collections::HashSet;
-use log::{info, warn, error};
+
+
+
+
 use tokio::sync::broadcast;
 use tokio::time::interval;
 use std::sync::atomic::{AtomicU64, Ordering};

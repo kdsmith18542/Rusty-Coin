@@ -3,23 +3,22 @@
 //! This module provides a unified interface for managing the entire governance
 //! lifecycle from proposal submission to activation.
 
-use std::collections::HashMap;
-use log::{info, warn, error, debug};
+use log::{info, error};
 
 use rusty_shared_types::{
     Hash, Transaction, ConsensusParams,
-    governance::{GovernanceProposal, GovernanceVote, ApprovalProof},
-    masternode::MasternodeList,
+    governance::{GovernanceProposal, GovernanceVote, ApprovalProof, ProposalType},
 };
 use rusty_core::consensus::state::BlockchainState;
 
 use crate::{
     stake_burning::{StakeBurningManager, StakeBurningConfig},
-    proposal_validation::{ProposalValidator, ProposalValidationConfig},
+    proposal_validation::{ProposalValidator, ProposalValidationConfig, ProposalValidationError},
     voting_coordinator::{VotingCoordinator, VotingConfig, ProposalOutcome},
     proposal_activation::{ProposalActivationManager, ActivationConfig, ActivateProposalTx},
     parameter_manager::{ParameterManager, ParameterChange},
 };
+
 
 /// Configuration for the governance coordinator
 #[derive(Debug, Clone)]
@@ -74,7 +73,7 @@ impl GovernanceCoordinator {
     }
 
     /// Process a new governance proposal
-    pub fn process_proposal(
+    pub fn process_governance_proposal(
         &mut self,
         proposal: GovernanceProposal,
         current_block_height: u64,
@@ -82,33 +81,17 @@ impl GovernanceCoordinator {
         consensus_params: &ConsensusParams,
         total_voting_power: u64,
     ) -> Result<(), String> {
-        // Validate the proposal
-        self.proposal_validator.validate_proposal(
-            &proposal,
-            current_block_height,
-            existing_proposals,
-            consensus_params,
-        ).map_err(|e| format!("Proposal validation failed: {:?}", e))?;
-
-        // Check for conflicts with active proposals
-        let active_proposals: Vec<GovernanceProposal> = self.voting_coordinator.get_active_proposals().into_iter().cloned().collect();
-        self.proposal_validator.check_conflicts(&proposal, active_proposals.as_slice())
-            .map_err(|e| format!("Proposal conflict detected: {:?}", e))?;
-
-        // Add to voting system
-        self.voting_coordinator.add_proposal(proposal.clone(), total_voting_power)?;
-
-        info!("Successfully processed governance proposal {}", hex::encode(proposal.proposal_id));
-        Ok(())
+        self.proposal_validator.validate_proposal(&proposal, current_block_height, existing_proposals, consensus_params)?;
+        self.voting_coordinator.add_proposal(proposal, current_block_height)
     }
 
-    /// Process a governance vote
-    pub fn process_vote(
+    /// Process a new governance vote
+    pub fn process_governance_vote(
         &mut self,
         vote: GovernanceVote,
         voter_power: u64,
     ) -> Result<(), String> {
-        self.voting_coordinator.cast_vote(vote, voter_power)
+        self.voting_coordinator.record_vote(vote, voter_power)
     }
 
     /// Process proposals that have ended and handle activation/burning
@@ -127,19 +110,19 @@ impl GovernanceCoordinator {
         let mut rejected_proposals = Vec::new();
 
         // Handle approved and rejected proposals
-        for proposal_id in finalized_proposals {
+        for proposal_id in &finalized_proposals {
             if let Some(stats) = self.voting_coordinator.get_proposal_stats(&proposal_id) {
                 match stats.outcome {
                     Some(ProposalOutcome::Approved) => {
                         // Schedule for activation
-                        if let Some(proposal) = self.get_proposal_by_id(&proposal_id) {
+                        if let Some(proposal) = self.get_proposal_by_id(proposal_id) {
                             let approval_proof = ApprovalProof {
                                 total_voting_power: stats.total_voting_power,
                                 yes_votes: stats.yes_votes,
                                 no_votes: stats.no_votes,
                                 abstain_votes: stats.abstain_votes,
-                                approval_percentage: stats.approval_rate,
-                                required_threshold: self.get_required_threshold(&proposal),
+                                approval_percentage_bp: Self::f64_to_u64_bp(stats.approval_rate),
+                                required_threshold_bp: Self::f64_to_u64_bp(self.get_required_threshold(&proposal)),
                                 voting_end_height: current_block_height,
                                 voting_state_hash: self.calculate_voting_state_hash(&stats),
                             };
@@ -150,26 +133,29 @@ impl GovernanceCoordinator {
                                     Ok(parameter_change) => {
                                         let activation_height = current_block_height + consensus_params.activation_delay_blocks;
                                         self.parameter_manager.schedule_parameter_change(parameter_change, activation_height)?;
-                                        info!("Scheduled parameter change for proposal {}", hex::encode(proposal_id));
+                                        info!("Scheduled parameter change for proposal {}", hex::encode(*proposal_id));
                                     }
                                     Err(e) => {
-                                        error!("Failed to validate parameter change for proposal {}: {}", hex::encode(proposal_id), e);
+                                        error!("Failed to validate parameter change for proposal {}: {}", hex::encode(*proposal_id), e);
                                     }
                                 }
                             }
 
+                            // Clone proposal to avoid borrow conflicts
+                            let proposal_clone = proposal.clone();
+
                             self.activation_manager.schedule_activation(
-                                proposal,
+                                proposal_clone,
                                 approval_proof,
                                 current_block_height,
                             )?;
 
-                            approved_proposals.push(proposal_id);
+                            approved_proposals.push(*proposal_id);
                         }
                     }
                     Some(ProposalOutcome::Rejected) |
                     Some(ProposalOutcome::InsufficientParticipation) => {
-                        rejected_proposals.push(proposal_id);
+                        rejected_proposals.push(*proposal_id);
                     }
                     _ => {}
                 }
@@ -254,7 +240,7 @@ impl GovernanceCoordinator {
     }
 
     /// Get proposal by ID (helper method)
-    fn get_proposal_by_id(&self, proposal_id: &Hash) -> Option<GovernanceProposal> {
+    fn get_proposal_by_id(&self, _proposal_id: &Hash) -> Option<GovernanceProposal> {
         // This would need to be implemented to retrieve proposals from storage
         // For now, return None as a placeholder
         None
@@ -267,6 +253,11 @@ impl GovernanceCoordinator {
             .get(&proposal_type_str)
             .copied()
             .unwrap_or(0.60)
+    }
+
+    /// Helper to convert f64 threshold to u64 basis points for comparison
+    fn f64_to_u64_bp(value: f64) -> u64 {
+        (value * 10_000.0).round() as u64
     }
 
     /// Calculate voting state hash

@@ -12,6 +12,8 @@ use libp2p::StreamProtocol;
 
 /// Protocol versions and names
 pub const BLOCK_SYNC_PROTOCOL: &str = "/rusty/block-sync/1.0";
+
+/// Protocol string for transaction propagation protocol.
 pub const TX_PROPAGATION_PROTOCOL: &str = "/rusty/tx-prop/1.0";
 
 /// Returns the list of supported protocols with their supported modes

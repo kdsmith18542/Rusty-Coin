@@ -9,10 +9,12 @@ use log::{info, warn, error, debug};
 use rusty_shared_types::{
     Hash, Transaction, TxInput, TxOutput, OutPoint,
     governance::{GovernanceProposal, ProposalType},
-    masternode::{MasternodeID, SlashingReason},
+    masternode::{MasternodeID, SlashingReason, MasternodeEntry},
     ConsensusParams,
 };
 use rusty_core::consensus::state::BlockchainState;
+
+use crate::{ProposalOutcome, ProposalVotingStats, VotingConfig};
 
 /// Reasons for burning proposal stakes
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,7 +73,7 @@ pub struct StakeBurningManager {
 
 /// Represents a pending stake burn
 #[derive(Debug, Clone)]
-struct PendingBurn {
+pub struct PendingBurn {
     proposal_id: Hash,
     proposer_address: Vec<u8>,
     stake_amount: u64,
@@ -83,7 +85,7 @@ struct PendingBurn {
 
 /// Represents an executed stake burn
 #[derive(Debug, Clone)]
-struct ExecutedBurn {
+pub struct ExecutedBurn {
     proposal_id: Hash,
     burn_amount: u64,
     reason: StakeBurningReason,
@@ -109,7 +111,7 @@ impl StakeBurningManager {
         total_voting_power: u64,
         yes_votes: u64,
         no_votes: u64,
-        total_votes: u64,
+        total_votes_cast: u64,
         consensus_params: &ConsensusParams,
     ) -> Result<Option<PendingBurn>, String> {
         // Check if proposal has ended
@@ -119,7 +121,7 @@ impl StakeBurningManager {
 
         // Calculate participation rate
         let participation_rate = if total_voting_power > 0 {
-            total_votes as f64 / total_voting_power as f64
+            total_votes_cast as f64 / total_voting_power as f64
         } else {
             0.0
         };
@@ -144,13 +146,15 @@ impl StakeBurningManager {
         } else {
             // Check if proposal was rejected
             let approval_threshold = match proposal.proposal_type {
-                ProposalType::ProtocolUpgrade => consensus_params.mn_approval_percentage,
-                ProposalType::ParameterChange => consensus_params.pos_approval_percentage,
-                ProposalType::TreasurySpend => consensus_params.mn_approval_percentage,
+                ProposalType::ProtocolUpgrade => consensus_params.protocol_upgrade_approval_percentage,
+                ProposalType::ParameterChange => consensus_params.parameter_change_approval_percentage,
+                ProposalType::TreasurySpend => consensus_params.treasury_spend_approval_percentage,
+                ProposalType::BugFix => consensus_params.bug_fix_approval_percentage,
+                ProposalType::CommunityFund => consensus_params.community_fund_approval_percentage,
             };
 
-            let approval_rate = if total_votes > 0 {
-                yes_votes as f64 / total_votes as f64
+            let approval_rate = if total_votes_cast > 0 {
+                yes_votes as f64 / total_votes_cast as f64
             } else {
                 0.0
             };
@@ -196,7 +200,7 @@ impl StakeBurningManager {
     pub fn execute_pending_burns(
         &mut self,
         current_block_height: u64,
-        blockchain_state: &mut BlockchainState,
+        _blockchain_state: &mut BlockchainState,
     ) -> Result<Vec<Transaction>, String> {
         let ready_burns: Vec<Hash> = self.pending_burns
             .iter()
@@ -245,6 +249,7 @@ impl StakeBurningManager {
             previous_output: pending_burn.collateral_outpoint.clone(),
             script_sig: vec![], // Would be filled with proper unlocking script
             sequence: 0xffffffff,
+            witness: vec![], // Witness data for the transaction
         };
 
         // Create burn output (unspendable)

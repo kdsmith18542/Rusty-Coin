@@ -8,7 +8,7 @@ clap = { workspace = true }
 rocksdb = { workspace = true }
 rusty-core = { path = "../rusty-core" }
 rusty-jsonrpc = { path = "../rusty-jsonrpc" }
-rusty-p2p = { path = "../rusty-p2p" }
+# rusty-p2p = { path = "../rusty-p2p" }  # Temporarily disabled
 rusty-types = { path = "../rusty-types" }
 serde = { workspace = true }
 tokio = { workspace = true }

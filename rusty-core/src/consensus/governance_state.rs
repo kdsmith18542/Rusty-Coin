@@ -1,18 +1,16 @@
 //! Manages the state of active governance proposals and votes.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::hash::Hasher;
-use log::{debug, error, info, warn};
+
 use serde::{Deserialize, Serialize};
-use sha2::{Sha256, Digest};
-use thiserror::Error;
-use tracing::{event, Level};
+use sha2::Digest;
+
+
 
 use crate::consensus::error::ConsensusError;
-use rusty_shared_types::{
-    Block, BlockHeader, Hash, MasternodeID, PublicKey, Ticket, TicketId, Transaction, TxInput
-};
-use rusty_shared_types::governance::{GovernanceProposal, GovernanceVote, VoteChoice, ProposalType};
+use rusty_shared_types::Hash;
+use rusty_shared_types::governance::{GovernanceProposal, GovernanceVote, VoteChoice};
 
 /// Represents the state of active governance proposals and votes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use ed25519_dalek::{Signature, Verifier, SignatureError, PublicKey as VerifyingKey};
 use rusty_shared_types::{BlockHeader, Ticket, TicketId, OutPoint, PublicKey, Hash};
-use rusty_shared_types::masternode::{MasternodeList, PoSeChallenge, PoSeResponse};
+use rusty_shared_types::masternode::MasternodeList;
 use crate::consensus::error::ConsensusError;
 
 pub fn validate_ticket_signature(public_key_bytes: &[u8], message: &[u8], signature_bytes: &[u8]) -> Result<bool, SignatureError> {

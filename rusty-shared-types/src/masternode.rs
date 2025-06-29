@@ -296,7 +296,7 @@ pub struct FerrousShieldMixOutput {
 }
 
 /// Represents the reason for a Masternode slashing event.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SlashingReason {
     MasternodeNonResponse,
     DoubleSigning,
@@ -306,7 +306,7 @@ pub enum SlashingReason {
 }
 
 /// Represents the type of malicious behavior for slashing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MaliciousActionType {
     DoubleSigning,
     InvalidServiceProvision,
@@ -351,7 +351,7 @@ pub struct MasternodeNonParticipationProof {
 }
 
 /// Represents a Masternode slashing transaction.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MasternodeSlashTx {
     pub version: u32,
     pub inputs: Vec<TxInput>,

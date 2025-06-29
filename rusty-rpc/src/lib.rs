@@ -5,7 +5,7 @@ pub mod server;
 pub mod rpc;
 pub mod error;
 
-use server::{run_rpc_server, run_rpc_server_https, TlsConfig};
+use server::{run_rpc_server, run_rpc_server_https};
 use std::net::SocketAddr;
 
 // Placeholder for RPC initialization or core logic

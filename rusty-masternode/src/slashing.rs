@@ -1,7 +1,8 @@
-use rusty_shared_types::{Transaction, StandardTransaction, TxInput, TxOutput, MasternodeSlashTx, MasternodeID, OutPoint, Hash};
+use rusty_shared_types::{Transaction, StandardTransaction, TxInput, TxOutput, Hash};
+use rusty_shared_types::masternode::{MasternodeSlashTx, MasternodeID, OutPoint};
 use rusty_core::consensus::state::BlockchainState;
-use rusty_core::masternode::{MasternodeEntry, MasternodeStatus};
-use rusty_core::error::ConsensusError;
+use rusty_shared_types::masternode::{MasternodeEntry, MasternodeStatus};
+use rusty_core::consensus::error::ConsensusError;
 
 // Represents the reason for a Masternode slashing event.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -4,16 +4,16 @@
 //! threshold signatures for consensus operations.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use log::{info, warn, error, debug};
-use threshold_crypto::{PublicKey, Signature};
+use std::time::Instant;
+use log::{info, warn};
 
-use rusty_shared_types::{Hash, MasternodeID, BlockHeader};
+
+use rusty_shared_types::{Hash, MasternodeID};
 use rusty_shared_types::dkg::{
-    DKGSessionID, DKGParticipant, DKGParams, DKGError,
+    DKGSessionID, DKGParticipant, DKGParams,
     ThresholdSignature, SignatureShare as DKGSignatureShare
 };
-use rusty_crypto::{DKGManager, DKGManagerConfig, DKGSessionStatus};
+use rusty_crypto::{DKGManager, DKGManagerConfig};
 use crate::consensus::error::ConsensusError;
 
 /// Configuration for threshold signature operations

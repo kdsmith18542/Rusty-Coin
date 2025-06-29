@@ -7,6 +7,7 @@ pub type PublicKey = [u8; 32];
 pub type Signature = [u8; 64];
 pub type Hash = [u8; 32];
 pub type PubKeyHash = [u8; 20];
+pub type Txid = [u8; 32];
 
 /// Represents a ticket in the Proof-of-Stake system.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,6 +84,7 @@ pub mod governance;
 pub mod masternode;
 pub mod dkg;
 pub mod dkg_messages;
+pub mod p2p;
 
 use governance::{GovernanceProposal, GovernanceVote};
 
@@ -111,7 +113,7 @@ impl From<[u8; 32]> for OutPoint {
 }
 
 /// Represents a transaction input, referencing a previous transaction's output.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TxInput {
     /// The `OutPoint` referencing the output being spent.
     pub previous_output: OutPoint,
@@ -124,7 +126,9 @@ pub struct TxInput {
 }
 
 /// Represents a transaction output, specifying a value and a locking script.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct TxOutput {
     /// The value of the output in satoshis.
     pub value: u64,
@@ -192,7 +196,9 @@ pub struct StandardTransaction {
 }
 
 /// Represents the different types of transactions supported by the blockchain.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Transaction {
     Standard {
         version: u32,
@@ -456,7 +462,7 @@ impl From<OutPoint> for MasternodeID {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Hash)]
 pub struct MasternodeIdentity {
     pub collateral_outpoint: OutPoint,
     pub operator_public_key: Vec<u8>, // Ed25519 public key
@@ -831,7 +837,7 @@ pub struct CoinbaseTransaction {
 }
 
 /// Represents a cryptographic signature used in transactions and other messages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TransactionSignature {
     #[serde(with = "serde_bytes")]
     pub bytes: [u8; 64],
@@ -852,16 +858,18 @@ impl TransactionSignature {
 }
 
 /// Represents a block header in the blockchain.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct BlockHeader {
     pub version: u32,
+    pub height: u64,
     pub previous_block_hash: [u8; 32],
     pub merkle_root: [u8; 32],
-    pub timestamp: u64,
-    pub nonce: u64,
-    pub difficulty_target: u32,
-    pub height: u64,
     pub state_root: [u8; 32],
+    pub timestamp: u64,
+    pub difficulty_target: u32,
+    pub nonce: u64,
 }
 
 impl BlockHeader {
@@ -880,7 +888,9 @@ impl BlockHeader {
 }
 
 /// Represents a block in the blockchain.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct Block {
     pub header: BlockHeader,
     pub ticket_votes: Vec<TicketVote>,
@@ -896,12 +906,15 @@ impl Block {
 }
 
 /// Represents a vote cast by a ticket in a Proof-of-Stake system.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[repr(C)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct TicketVote {
     pub ticket_id: [u8; 32],
     pub block_hash: [u8; 32],
-    pub vote: VoteType,
-    pub signature: TransactionSignature,
+    pub vote: u8,
+    #[serde(with = "serde_bytes")]
+    pub signature: [u8; 64],
 }
 
 /// Defines the type of vote for a ticket.
@@ -1003,6 +1016,13 @@ pub struct ConsensusParams {
     pub pos_finality_depth: u32,
     /// Maximum block size in bytes
     pub max_block_size: u64,
+    
+    // Additional governance approval percentages
+    pub protocol_upgrade_approval_percentage: f64,
+    pub parameter_change_approval_percentage: f64,
+    pub treasury_spend_approval_percentage: f64,
+    pub bug_fix_approval_percentage: f64,
+    pub community_fund_approval_percentage: f64,
 }
 
 impl Default for ConsensusParams {
@@ -1049,6 +1069,13 @@ impl Default for ConsensusParams {
             min_witness_signatures: 3, // Minimum 3 witness signatures for a valid proof
             pos_finality_depth: 6, // 6 blocks for PoS finality (reorg protection)
             max_block_size: 4_000_000, // 4 MB
+            
+            // Additional governance approval percentages
+            protocol_upgrade_approval_percentage: 0.8, // 80% approval for protocol upgrades
+            parameter_change_approval_percentage: 0.75, // 75% approval for parameter changes
+            treasury_spend_approval_percentage: 0.6, // 60% approval for treasury spending
+            bug_fix_approval_percentage: 0.6, // 60% approval for bug fixes
+            community_fund_approval_percentage: 0.65, // 65% approval for community fund
         }
     }
 }

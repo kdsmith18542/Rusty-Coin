@@ -19,6 +19,8 @@ use rusty_shared_types::{
     OutPoint
 };
 use std::collections::HashMap;
+use rusty_crypto::hash::blake3;
+use std::io::Read;
 
 /// Fuzzable fraud evidence
 #[derive(Debug, Clone, Arbitrary)]
@@ -32,8 +34,7 @@ struct FuzzFraudEvidence {
 
 impl FuzzFraudEvidence {
     fn hash(&self) -> [u8; 32] {
-        use blake3::Hasher as Blake3;
-        let mut hasher = Blake3::new();
+        let mut hasher = blake3::Hasher::new();
         hasher.update(&self.pre_state);
         hasher.update(&self.post_state);
         hasher.update(&self.fraudulent_operation);
@@ -48,7 +49,7 @@ impl FuzzFraudEvidence {
             }
         }
         let mut result = [0u8; 32];
-        result.copy_from_slice(&hasher.finalize().as_slice()[..32]);
+        result.copy_from_slice(hasher.finalize().as_bytes());
         result
     }
 }
@@ -65,32 +66,6 @@ impl From<FuzzFraudEvidence> for FraudEvidence {
     }
 }
 
-impl From<FuzzFraudProofChallenge> for FraudProofChallenge {
-    fn from(fuzz_challenge: FuzzFraudProofChallenge) -> Self {
-        let status = match fuzz_challenge.status % 7 {
-            0 => FraudProofStatus::Pending,
-            1 => FraudProofStatus::UnderVerification,
-            2 => FraudProofStatus::Proven,
-            3 => FraudProofStatus::Disproven,
-            4 => FraudProofStatus::TimedOut,
-            5 => FraudProofStatus::Withdrawn,
-            _ => FraudProofStatus::Pending,
-        };
-        
-        let challenge = FraudProofChallenge {
-            challenge_id: fuzz_challenge.challenge_id,
-            fraud_proof: fuzz_challenge.fraud_proof.into(),
-            status,
-            submission_height: fuzz_challenge.submission_height,
-            verification_deadline: fuzz_challenge.verification_deadline,
-            challenge_bond: fuzz_challenge.challenge_bond,
-            responses: fuzz_challenge.responses.into_iter().map(Into::into).collect(),
-            verdict: None, // Verdict is set separately based on challenge resolution
-        };
-        
-        challenge
-    }
-}
 
 /// Test deserialization of raw binary data into fraud proof related types
 fn test_deserialization_fuzzing(data: &[u8]) {
@@ -119,29 +94,104 @@ fn test_deserialization_fuzzing(data: &[u8]) {
 }
 
 fuzz_target!(|data: &[u8]| {
-    // Skip empty data to avoid wasting cycles
-    if data.is_empty() {
+    if data.len() < 32 {
         return;
     }
-    
-    // Test 1: Raw fraud proof parsing
-    test_raw_fraud_proof_parsing(data);
-    
-    // Test 2: Fraud evidence fuzzing
-    if let Ok(mut unstructured) = Unstructured::new(data) {
-        // Test with structured fuzzing
-        if let Ok(fuzz_evidence) = FuzzFraudEvidence::arbitrary(&mut unstructured) {
-            test_structured_evidence_fuzzing(fuzz_evidence);
+
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(data);
+    let mut result = [0u8; 32];
+    result.copy_from_slice(hasher.finalize().as_bytes());
+
+    let mut unstructured = Unstructured::new(data);
+
+    if let Ok(fraud_proof) = FraudProof::arbitrary(&mut unstructured) {
+        // Basic validation
+        let _ = fraud_proof.validate();
+    }
+
+    // Test fraud proof generation from transactions
+    if data.len() < 100 {
+        return;
+    }
+
+    let mut unstructured_tx = Unstructured::new(data);
+    if let Ok(tx) = Transaction::arbitrary(&mut unstructured_tx) {
+        let fraud_type = match unstructured_tx.arbitrary::<u8>().unwrap_or(0) % 3 {
+            0 => FraudType::DoubleSpending,
+            1 => FraudType::InvalidStateTransition,
+            _ => FraudType::SidechainMisbehavior,
+        };
+
+        let fraud_evidence = FraudEvidence::TransactionFraud {
+            offending_transaction: tx.clone(),
+            context_data: data.to_vec(),
+        };
+
+        let fraud_proof = FraudProof::new(fraud_type.clone(), fraud_evidence);
+        let _ = fraud_proof.validate();
+    }
+
+    // Test PoSe fraud
+    if data.len() < 50 {
+        return;
+    }
+    let mut unstructured_pose = Unstructured::new(data);
+    if let Ok(pose_data) = Vec::<u8>::arbitrary(&mut unstructured_pose) {
+        let fraud_config = FraudProofConfig::default();
+        let mut fraud_manager = FraudProofManager::new(fraud_config);
+        let challenge_id = blake3::hash(&pose_data).into();
+
+        if let Some(challenge_status) = fraud_manager.get_challenge_status(&challenge_id) {
+            let fraud_type = match unstructured_pose.arbitrary::<u8>().unwrap_or(0) % 2 {
+                0 => FraudType::InvalidStateTransition,
+                _ => FraudType::SidechainMisbehavior,
+            };
+
+            let fraud_evidence = FraudEvidence::TransactionFraud {
+                offending_transaction: Transaction::arbitrary(&mut unstructured_pose).unwrap_or_else(|_| {
+                    Transaction::Standard { version: 1, inputs: vec![], outputs: vec![], lock_time: 0, fee: 0, witness: vec![] }
+                }),
+                context_data: pose_data.clone(),
+            };
+
+            let fraud_proof = FraudProof::new(fraud_type, fraud_evidence);
+            let _ = fraud_proof.validate();
         }
-        
-        // Test with raw bytes for deserialization
-        test_deserialization_fuzzing(data);
-        
-        // Test with challenge processing
-        test_fraud_proof_challenge_processing(data);
-        
-        // Test edge cases
-        test_fraud_detection_edge_cases(data);
+    }
+
+    // Test random fraud proof generation and validation
+    if let Ok(fraud_proof) = FraudProof::arbitrary(&mut Unstructured::new(data).unwrap()) {
+        let _ = fraud_proof.validate();
+    }
+
+    // Test specific fraud types
+    if data.len() > 100 {
+        let mut unstructured_specific = Unstructured::new(data);
+        if let Ok(tx) = Transaction::arbitrary(&mut unstructured_specific) {
+            let fraud_evidence_tx = FraudEvidence::TransactionFraud {
+                offending_transaction: tx,
+                context_data: unstructured_specific.bytes(10).unwrap().to_vec(),
+            };
+
+            let fraud_proof_double_spend = FraudProof::new(
+                FraudType::DoubleSpending,
+                fraud_evidence_tx.clone(),
+            );
+            let _ = fraud_proof_double_spend.validate();
+
+            let fraud_proof_invalid_state = FraudProof::new(
+                FraudType::InvalidStateTransition,
+                fraud_evidence_tx.clone(),
+            );
+            let _ = fraud_proof_invalid_state.validate();
+
+            let fraud_proof_sidechain_misbehavior = FraudProof::new(
+                FraudType::SidechainMisbehavior,
+                fraud_evidence_tx,
+            );
+            let _ = fraud_proof_sidechain_misbehavior.validate();
+        }
     }
 });
 

@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use std::collections::HashMap;
+
 use crate::types::{P2PMessage, BlockRequest, BlockResponse, GetHeaders, Headers, PeerInfo};
 
 pub mod sync;

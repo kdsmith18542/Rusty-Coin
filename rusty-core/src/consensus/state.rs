@@ -1,8 +1,8 @@
-use rusty_shared_types::{Block, OutPoint, TxOutput, Transaction, Utxo, Ticket, TicketId, BlockHeader, Hash};
+use rusty_shared_types::{Block, OutPoint, TxOutput, Transaction, Utxo, Ticket, TicketId, Hash};
 use rusty_shared_types::masternode::{MasternodeList, MasternodeID};
-use rusty_shared_types::governance::{GovernanceProposal, VoteChoice};
+
 use std::collections::HashMap;
-use std::path::Path;
+
 use std::sync::{Arc, Mutex};
 use serde::{Serialize, Deserialize};
 use crate::consensus::blockchain::Blockchain;

@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 use crate::{Hash, PublicKey, TransactionSignature};
 
 /// Enumerates the types of governance proposals.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ProposalType {
     /// A proposal to upgrade the protocol rules.
     ProtocolUpgrade,
@@ -12,10 +12,14 @@ pub enum ProposalType {
     ParameterChange,
     /// A proposal to spend funds from the treasury (future feature).
     TreasurySpend,
+    /// A proposal to fix a bug in the protocol.
+    BugFix,
+    /// A proposal to allocate funds for community initiatives.
+    CommunityFund,
 }
 
 /// Represents a formal proposal submitted to the governance system.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GovernanceProposal {
     /// A unique BLAKE3 hash of the canonical serialized proposal content.
     pub proposal_id: Hash,
@@ -36,7 +40,15 @@ pub struct GovernanceProposal {
     /// For ParameterChange proposals, the name of the parameter to change (Optional).
     pub target_parameter: Option<String>,
     /// For ParameterChange proposals, the proposed new value (Optional).
-    pub new_value: Option<String>, // TODO: Use a more specific type if parameters are structured
+    pub new_value: Option<String>,
+    /// For BugFix proposals, a description of the bug being fixed.
+    pub bug_description: Option<String>,
+    /// For CommunityFund proposals, the recipient address.
+    pub recipient_address: Option<PublicKey>,
+    /// For CommunityFund proposals, the amount to be allocated.
+    pub amount: Option<u64>,
+    /// For CommunityFund proposals, a description of the project.
+    pub project_description: Option<String>,
     /// Ed25519 signature by the ProposerAddress over the entire GOVERNANCE_PROPOSAL_TX payload.
     pub proposer_signature: TransactionSignature,
     pub inputs: Vec<crate::TxInput>,
@@ -46,8 +58,18 @@ pub struct GovernanceProposal {
     pub fee: u64,
 }
 
+impl GovernanceProposal {
+    /// Calculate the hash of the proposal
+    pub fn hash(&self) -> Hash {
+        match bincode::serialize(self) {
+            Ok(bytes) => blake3::hash(&bytes).into(),
+            Err(_) => [0u8; 32], // Should never happen for valid proposals
+        }
+    }
+}
+
 /// Proof that a proposal was approved by governance vote
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ApprovalProof {
     /// Total voting power that participated
     pub total_voting_power: u64,
@@ -57,10 +79,10 @@ pub struct ApprovalProof {
     pub no_votes: u64,
     /// Abstain votes received
     pub abstain_votes: u64,
-    /// Approval percentage achieved
-    pub approval_percentage: f64,
-    /// Required approval threshold
-    pub required_threshold: f64,
+    /// Approval percentage achieved (in basis points, 10000 = 100%)
+    pub approval_percentage_bp: u64,
+    /// Required approval threshold (in basis points, 10000 = 100%)
+    pub required_threshold_bp: u64,
     /// Block height when voting ended
     pub voting_end_height: u64,
     /// Hash of the voting state at end of voting period
@@ -68,7 +90,7 @@ pub struct ApprovalProof {
 }
 
 /// Enumerates the type of voter.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum VoterType {
     /// Proof-of-Stake ticket holder.
     PosTicket,
@@ -77,7 +99,7 @@ pub enum VoterType {
 }
 
 /// Enumerates the possible choices for a vote.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum VoteChoice {
     Yes,
     No,
@@ -85,7 +107,7 @@ pub enum VoteChoice {
 }
 
 /// Represents a vote cast on a governance proposal.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub struct GovernanceVote {
     /// The ProposalID being voted on.
     pub proposal_id: Hash,

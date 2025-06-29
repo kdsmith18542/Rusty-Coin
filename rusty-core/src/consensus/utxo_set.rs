@@ -1,7 +1,7 @@
 // rusty-core/src/consensus/utxo_set.rs
 
 use std::collections::HashMap;
-use rusty_shared_types::{Block, OutPoint, Transaction, TxOutput, Utxo, TicketId, MasternodeID};
+use rusty_shared_types::{Block, OutPoint, Transaction, TxOutput, Utxo, TicketId};
 use crate::consensus::error::ConsensusError;
 use serde::{Serialize, Deserialize};
 
@@ -74,7 +74,8 @@ impl UtxoSet {
         // Process inputs first (remove spent UTXOs)
         for tx in &block.transactions {
             for input in tx.get_inputs() {
-                self.remove_utxo(&input.previous_output);
+                let outpoint = input.previous_output.clone();
+                self.remove_utxo(&outpoint);
             }
         }
 
@@ -100,7 +101,8 @@ impl UtxoSet {
     /// Updates the UTXO set from a transaction.
     pub fn update_from_transaction(&mut self, tx: &Transaction, current_block_height: u64) {
         for input in tx.get_inputs() {
-            self.remove_utxo(&input.previous_output);
+            let outpoint = input.previous_output.clone();
+            self.remove_utxo(&outpoint);
         }
         
         let is_coinbase = tx.is_coinbase();
@@ -149,10 +151,11 @@ impl UtxoSet {
                 // For now, let's assume `utxo` is a dummy `Utxo` object based on previous `TxOutput`.
                 // A more robust solution would be to save the *full* Utxo when it's removed.
                 // But `remove_utxo` already returns `Option<Utxo>`, so we can just re-add it.
-                if let Some(original_utxo) = self.get_historical_utxo(&input.previous_output) {
-                     self.add_utxo(input.previous_output.clone(), original_utxo);
+                let outpoint = input.previous_output.clone();
+                if let Some(original_utxo) = self.get_historical_utxo(&outpoint) {
+                     self.add_utxo(outpoint.clone(), original_utxo);
                 } else {
-                    return Err(ConsensusError::FailedToFindHistoricalUTXO(input.previous_output.clone()));
+                    return Err(ConsensusError::FailedToFindHistoricalUTXO(outpoint));
                 }
             }
         }
@@ -182,13 +185,14 @@ impl UtxoSet {
         let mut spent_utxos_in_tx = std::collections::HashSet::new(); // Tracks UTXOs spent within this transaction
 
         for tx_in in tx.get_inputs() {
-            if spent_utxos_in_tx.contains(&tx_in.previous_output) {
+            let outpoint = tx_in.previous_output.clone();
+            if spent_utxos_in_tx.contains(&outpoint) {
                 // Double spend within the same transaction
                 return false;
             }
-            spent_utxos_in_tx.insert(tx_in.previous_output.clone());
+            spent_utxos_in_tx.insert(outpoint.clone());
 
-            if let Some(utxo) = self.utxos.get(&tx_in.previous_output) {
+            if let Some(utxo) = self.utxos.get(&outpoint) {
                 total_input_value += utxo.output.value;
                 // TODO: Implement coinbase maturity check here using utxo.is_coinbase and utxo.creation_height
                 // TODO: Implement lock_time/sequence validation here

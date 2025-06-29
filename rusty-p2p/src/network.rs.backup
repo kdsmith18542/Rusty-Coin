@@ -1,0 +1,946 @@
+// Standard library
+use std::collections::{HashMap, VecDeque};
+use std::time::{Duration, Instant};
+use std::iter;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+
+// External crates
+use async_trait::async_trait;
+use bincode;
+use libp2p::{
+    gossipsub::{self, Gossipsub, GossipsubEvent, IdentTopic, Message as GossipsubMessage, MessageAuthenticity, MessageId, RawGossipsubMessage, Config as GossipsubConfig},
+    identify::{self, Identify, IdentifyEvent},
+    identity,
+    kad::{self, Kademlia, KademliaEvent, QueryId, QueryResult, store::MemoryStore},
+    mdns::{self, Mdns, MdnsEvent, Config as MdnsConfig, tokio::Behaviour as MdnsTokio},
+    noise::{self, NoiseConfig, Authenticated, X25519Spec, Keypair as NoiseKeypair},
+    ping::{self, Ping, PingEvent},
+    request_response::{self, RequestResponse, RequestResponseCodec, RequestResponseEvent, RequestId, ResponseChannel, Message as RequestResponseMessage, ProtocolSupport},
+    swarm::{self, ConnectionHandler, ConnectionHandlerUpgrErr, NetworkBehaviour, SwarmEvent, StreamProtocol, SubstreamProtocol, SwarmBuilder, Swarm},
+    tcp::{self, TokioTcpConfig},
+    yamux::{self, YamuxConfig},
+    core::upgrade,
+    Multiaddr, PeerId, Transport,
+};
+use log::{debug, error, info, trace, warn};
+use futures::{StreamExt, AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{self, AsyncBufReadExt};
+use tokio::sync::{mpsc, oneshot};
+use tokio::time::{interval_at, Instant as TokioInstant};
+use thiserror::Error;
+
+use rusty_core::consensus::error::ConsensusError;
+use rusty_shared_types::{
+    Block,
+    BlockHeader,
+    Transaction,
+    Txid,
+};
+use rusty_shared_types::p2p::{
+    BlockData,
+    BlockHeaderData,
+    BlockRequest,
+    BlockResponse,
+    GetHeaders,
+    Headers,
+    Inv,
+    MasternodeID,
+    P2PMessage,
+    PeerInfo as SharedPeerInfo,
+    PeerType,
+    PoSeChallenge,
+    PoSeResponse,
+    TxData,
+};
+
+use crate::{protocols::block_sync::{self, BlockSyncCodec, BlockSyncRequest, BlockSyncResponse}, protocols::peer_discovery::{self, PeerDiscovery, PeerDiscoveryEvent, DiscoveryConfig}, protocols::tx_prop::{self, TxPropHandler, TxPropMessage, TX_PROPAGATION_TOPIC, TxPropCodec},};
+
+// Constants
+const MAX_CHUNK_SIZE: usize = 1024 * 1024; // 1MB
+const MAX_PEER_CONNECTIONS: usize = 8; // Max 8 peer connections
+
+/// Custom error type for P2P network operations
+#[derive(Error, Debug)]
+pub enum P2PError {
+    #[error("Network error: {0}")]
+    NetworkError(#[from] Box<dyn std::error::Error + Send + Sync>),
+    
+    #[error("Peer error: {0}")]
+    PeerError(String),
+    
+    #[error("Protocol error: {0}")]
+    ProtocolError(String),
+    
+    #[error("Validation error: {0}")]
+    ValidationError(String),
+    
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    
+    #[error("Serialization error: {0}")]
+    SerializationError(#[from] bincode::Error),
+    
+    #[error("Consensus error: {0}")]
+    ConsensusError(#[from] ConsensusError),
+}
+
+/// Type alias for P2P operation results
+pub type P2PResult<T> = std::result::Result<T, P2PError>;
+
+/// Configuration for the RustyCoin network
+#[derive(Clone, Debug)]
+pub struct RustyCoinNetworkConfig {
+    /// Enable mDNS for local peer discovery
+    pub enable_mdns: bool,
+    
+    /// Enable Kademlia DHT for peer and content routing
+    pub enable_kademlia: bool,
+    
+    /// List of bootstrap nodes to connect to
+    pub bootstrap_nodes: Vec<Multiaddr>,
+    
+    /// Protocol version string for network protocol compatibility
+    pub protocol_version: String,
+    
+    /// Maximum number of peers to maintain connections with
+    pub max_peers: usize,
+    
+    /// Maximum number of inbound connections to accept
+    pub max_inbound_connections: usize,
+    
+    /// Maximum number of outbound connections to maintain
+    pub max_outbound_connections: usize,
+    
+    /// Maximum message size in bytes
+    pub max_message_size: usize,
+    
+    /// Maximum number of pending block requests per peer
+    pub max_pending_requests_per_peer: usize,
+    
+    /// Timeout for block sync requests
+    pub block_sync_timeout: Duration,
+    
+    /// Timeout for transaction propagation
+    pub tx_propagation_timeout: Duration,
+    
+    /// Maximum number of transactions to queue for propagation
+    pub tx_propagation_queue_size: usize,
+    
+    /// Enable/disable transaction relay
+    pub enable_tx_relay: bool,
+    
+    /// Enable/disable block relay
+    pub enable_block_relay: bool,
+    
+    /// Maximum number of blocks to request in a single batch
+    pub max_blocks_per_request: u32,
+    
+    /// Maximum number of block headers to request in a single batch
+    pub max_headers_per_request: u32,
+    
+    /// Maximum number of transaction announcements to process per peer per second
+    pub max_tx_announcements_per_second: u32,
+    
+    /// Maximum number of block announcements to process per peer per second
+    pub max_block_announcements_per_second: u32,
+
+    pub gossipsub_config: GossipsubConfig,
+    pub identify_config: identify::Config,
+    pub kademlia_config: kad::Config,
+    pub mdns_config: MdnsConfig,
+    pub ping_config: ping::Config,
+    pub request_response_config: request_response::Config,
+    pub peer_discovery_config: crate::protocols::peer_discovery::DiscoveryConfig,
+}
+
+impl Default for RustyCoinNetworkConfig {
+    fn default() -> Self {
+        Self {
+            enable_mdns: true,
+            enable_kademlia: true,
+            bootstrap_nodes: Vec::new(),
+            protocol_version: "rusty/1.0.0".to_string(),
+            max_peers: 50,
+            max_inbound_connections: 100,
+            max_outbound_connections: 10,
+            max_message_size: 10 * 1024 * 1024, // 10MB
+            max_pending_requests_per_peer: 10,
+            block_sync_timeout: Duration::from_secs(30),
+            tx_propagation_timeout: Duration::from_secs(10),
+            tx_propagation_queue_size: 1000,
+            enable_tx_relay: true,
+            enable_block_relay: true,
+            max_blocks_per_request: 128,
+            max_headers_per_request: 2000,
+            max_tx_announcements_per_second: 1000,
+            max_block_announcements_per_second: 10,
+            gossipsub_config: GossipsubConfig::default(),
+            identify_config: identify::Config::default(),
+            kademlia_config: kad::Config::default(),
+            mdns_config: MdnsConfig::default(),
+            ping_config: ping::Config::default(),
+            request_response_config: request_response::Config::default(),
+            peer_discovery_config: crate::protocols::peer_discovery::DiscoveryConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PeerRateLimiter {
+    // TODO: Implement actual rate limiting logic
+}
+
+impl PeerRateLimiter {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn allows(&mut self, _peer_id: &PeerId, _message_size: usize) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageReassembler {
+    // TODO: Implement message reassembly logic
+    pub buffers: HashMap<u64, MessageBuffer>,
+    pub timeout_duration: Duration,
+    pub metrics: Arc<AtomicU64>,
+    pub max_message_size: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct MessageBuffer {
+    pub total_chunks: u16,
+    pub received_chunks: u16,
+    pub total_size: u32,
+    pub chunks: Vec<Option<Vec<u8>>>,
+    pub last_activity: Instant,
+}
+
+impl MessageReassembler {
+    pub fn new(
+        timeout: Duration,
+        metrics: Arc<AtomicU64>,
+        max_message_size: u64,
+    ) -> Self {
+        Self {
+            buffers: HashMap::new(),
+            timeout_duration: timeout,
+            metrics,
+            max_message_size,
+        }
+    }
+
+    pub fn add_chunk(&mut self, header: ChunkHeader, chunk: Vec<u8>) -> Option<Vec<u8>> {
+        let message_id = header.message_id;
+        let total_chunks = header.total_chunks;
+        let chunk_index = header.chunk_index;
+        let total_size = header.total_size;
+
+        if chunk_index >= total_chunks || (chunk.len() as u32 + (total_size - (MAX_CHUNK_SIZE * (total_chunks as usize - 1)) as u32)) as u64 > self.max_message_size {
+            warn!("Received invalid chunk for message_id {}: chunk_index {} >= total_chunks {} or chunk size too large",
+                message_id, chunk_index, total_chunks);
+            return None;
+        }
+
+        let buffer = self.buffers.entry(message_id).or_insert_with(|| MessageBuffer {
+            total_chunks,
+            received_chunks: 0,
+            total_size,
+            chunks: vec![None; total_chunks as usize],
+            last_activity: Instant::now(),
+        });
+
+        if buffer.chunks[chunk_index as usize].is_some() {
+            debug!("Duplicate chunk received for message_id {}, chunk_index {}", message_id, chunk_index);
+            return None;
+        }
+
+        buffer.chunks[chunk_index as usize] = Some(chunk);
+        buffer.received_chunks += 1;
+        buffer.last_activity = Instant::now();
+
+        if buffer.received_chunks == buffer.total_chunks {
+            // Message reassembled, combine chunks
+            let mut reassembled_message = Vec::with_capacity(buffer.total_size as usize);
+            for i in 0..buffer.total_chunks {
+                if let Some(chunk_data) = buffer.chunks[i as usize].take() {
+                    reassembled_message.extend_from_slice(&chunk_data);
+                } else {
+                    // This should not happen if received_chunks == total_chunks
+                    error!("Missing chunk during reassembly for message_id {}", message_id);
+                    self.buffers.remove(&message_id);
+                    return None;
+                }
+            }
+            self.buffers.remove(&message_id);
+            Some(reassembled_message)
+        } else {
+            None
+        }
+    }
+
+    pub fn cleanup_old_messages(&mut self) {
+        let now = Instant::now();
+        self.buffers.retain(|_, buffer| {
+            now.duration_since(buffer.last_activity) < self.timeout_duration
+        });
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FragmentationMetrics {
+    // TODO: Implement fragmentation metrics
+}
+
+impl FragmentationMetrics {
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub fn record_fragmented_message(&self, _size: usize, _num_chunks: usize) {}
+}
+
+#[derive(NetworkBehaviour)]
+pub struct CombinedBehaviour {
+    pub gossipsub: Gossipsub,
+    pub identify: Identify,
+    pub ping: Ping,
+    pub request_response: RequestResponse<BlockSyncCodec>,
+    pub tx_propagation: RequestResponse<TxPropCodec>,
+    pub peer_discovery: PeerDiscovery,
+}
+
+/// Events emitted by the `RustyCoinBehaviour`.
+#[derive(Debug)]
+pub enum RustyCoinEvent {
+    /// Event from the Gossipsub protocol.
+    Gossipsub(GossipsubEvent),
+    /// Event from the Identify protocol.
+    Identify(IdentifyEvent),
+    /// Event from the Kademlia DHT.
+    Kademlia(KademliaEvent),
+    /// Event from the mDNS protocol.
+    Mdns(MdnsEvent),
+    /// Event from the Ping protocol.
+    Ping(PingEvent),
+    /// Event from the Request/Response protocol for block sync.
+    BlockSync(RequestResponseEvent<BlockSyncRequest, BlockSyncResponse>),
+    /// Event from the Request/Response protocol for transaction propagation.
+    TxProp(RequestResponseEvent<TxPropMessage, TxPropMessage>),
+    /// Event from the Peer Discovery protocol.
+    PeerDiscovery(PeerDiscoveryEvent),
+}
+
+impl From<GossipsubEvent> for RustyCoinEvent {
+    fn from(event: GossipsubEvent) -> Self {
+        RustyCoinEvent::Gossipsub(event)
+    }
+}
+
+impl From<IdentifyEvent> for RustyCoinEvent {
+    fn from(event: IdentifyEvent) -> Self {
+        RustyCoinEvent::Identify(event)
+    }
+}
+
+impl From<KademliaEvent> for RustyCoinEvent {
+    fn from(event: KademliaEvent) -> Self {
+        RustyCoinEvent::Kademlia(event)
+    }
+}
+
+impl From<MdnsEvent> for RustyCoinEvent {
+    fn from(event: MdnsEvent) -> Self {
+        RustyCoinEvent::Mdns(event)
+    }
+}
+
+impl From<PingEvent> for RustyCoinEvent {
+    fn from(event: PingEvent) -> Self {
+        RustyCoinEvent::Ping(event)
+    }
+}
+
+impl From<RequestResponseEvent<BlockSyncRequest, BlockSyncResponse>> for RustyCoinEvent {
+    fn from(event: RequestResponseEvent<BlockSyncRequest, BlockSyncResponse>) -> Self {
+        RustyCoinEvent::BlockSync(event)
+    }
+}
+
+impl From<RequestResponseEvent<TxPropMessage, TxPropMessage>> for RustyCoinEvent {
+    fn from(event: RequestResponseEvent<TxPropMessage, TxPropMessage>) -> Self {
+        RustyCoinEvent::TxProp(event)
+    }
+}
+
+impl From<PeerDiscoveryEvent> for RustyCoinEvent {
+    fn from(event: PeerDiscoveryEvent) -> Self {
+        RustyCoinEvent::PeerDiscovery(event)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ChunkHeader {
+    /// Unique message ID
+    message_id: u64,
+    
+    /// Total number of chunks in the message
+    total_chunks: u16,
+    
+    /// Index of this chunk in the message
+    chunk_index: u16,
+    
+    /// Total size of the message in bytes
+    total_size: u32,
+}
+
+pub struct P2PNetwork {
+    pub swarm: Swarm<CombinedBehaviour>,
+    // pub event_sender: mpsc::Sender<RustyCoinEvent>,
+    // event_receiver: mpsc::Receiver<RustyCoinEvent>,
+}
+
+impl P2PNetwork {
+    /// Creates a new P2P network instance with the given configuration
+    pub async fn new(config: RustyCoinNetworkConfig) -> P2PResult<Self> {
+        let local_key = identity::Keypair::generate_ed25519();
+        let local_peer_id = PeerId::from(local_key.public());
+
+        info!("Local peer ID: {:?}", local_peer_id);
+
+        let transport = {
+            let noise_keys = noise::Keypair::<X25519Spec>::new()
+                .into_authentic(&local_key)
+                .expect("Failed to create noise keys");
+
+            TokioTcpConfig::new()
+                .nodelay(true)
+                .upgrade(upgrade::Version::V1)
+                .authenticate(NoiseConfig::xx(noise_keys).into_authenticated())
+                .multiplex(YamuxConfig::default())
+                .timeout(Duration::from_secs(20))
+                .boxed()
+        };
+
+        let gossipsub_config = config.gossipsub_config;
+        let mut gossipsub = Gossipsub::new(
+            MessageAuthenticity::Signed(local_key.clone()),
+            gossipsub_config,
+        )
+        .expect("Failed to create Gossipsub behaviour");
+
+        let identify_config = config.identify_config;
+        let identify = Identify::new(identify_config, local_peer_id.clone());
+
+        let ping = Ping::new(config.ping_config);
+
+        let request_response_config = config.request_response_config;
+        let request_response = RequestResponse::new(
+            BlockSyncCodec::default(),
+            iter::once((StreamProtocol::new("/rusty/block_sync/1.0.0"), ProtocolSupport::Full)),
+            request_response_config,
+        );
+
+        let tx_propagation = RequestResponse::new(
+            TxPropCodec::default(),
+            iter::once((StreamProtocol::new(TX_PROPAGATION_TOPIC), ProtocolSupport::Full)),
+            config.request_response_config.clone(), // Use a clone of the request_response_config for tx_propagation
+        );
+
+        let peer_discovery_config = config.peer_discovery_config;
+        let peer_discovery = PeerDiscovery::new(local_peer_id, peer_discovery_config)
+            .map_err(|e| P2PError::ProtocolError(format!("Failed to create peer discovery: {}", e)))?;
+
+        let behaviour = CombinedBehaviour {
+            gossipsub,
+            identify,
+            ping,
+            request_response,
+            tx_propagation,
+            peer_discovery,
+        };
+
+        let swarm = SwarmBuilder::new(transport, behaviour, local_peer_id)
+            .executor(Box::new(|fut| {
+                tokio::spawn(fut);
+            }))
+            .build();
+
+        Ok(Self { swarm })
+    }
+
+    pub fn local_peer_id(&self) -> &PeerId {
+        self.swarm.local_peer_id()
+    }
+
+    pub async fn start_with_shutdown(&mut self, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> P2PResult<()> {
+        loop {
+            tokio::select! {
+                event = self.swarm.select_next_some() => match event {
+                    SwarmEvent::NewListenAddr { address, .. } => info!("Listening on {:?}", address),
+                    SwarmEvent::Behaviour(event) => match event {
+                        RustyCoinEvent::Gossipsub(event) => debug!("Gossipsub event: {:?}", event),
+                        RustyCoinEvent::Identify(event) => debug!("Identify event: {:?}", event),
+                        RustyCoinEvent::Kademlia(event) => debug!("Kademlia event: {:?}", event),
+                        RustyCoinEvent::Mdns(event) => debug!("Mdns event: {:?}", event),
+                        RustyCoinEvent::Ping(event) => debug!("Ping event: {:?}", event),
+                        RustyCoinEvent::BlockSync(event) => debug!("BlockSync event: {:?}", event),
+                        RustyCoinEvent::TxProp(event) => debug!("TxProp event: {:?}", event),
+                        RustyCoinEvent::PeerDiscovery(event) => {
+                            match event {
+                                PeerDiscoveryEvent::Discovered(peer_info) => info!("Discovered new peer: {:?}", peer_info),
+                                PeerDiscoveryEvent::Expired(peer_id) => info!("Peer expired: {:?}", peer_id),
+                                PeerDiscoveryEvent::Kademlia(event) => debug!("Kademlia discovery event: {:?}", event),
+                                PeerDiscoveryEvent::Mdns(event) => debug!("Mdns discovery event: {:?}", event),
+                                PeerDiscoveryEvent::BootstrapFailed(err) => error!("Kademlia bootstrap failed: {:?}", err),
+                                PeerDiscoveryEvent::QueryCompleted(query_id, result) => debug!("Kademlia query {:?} completed with result: {:?}", query_id, result),
+                            }
+                        }
+                    },
+                    _ => {},
+                },
+                _ = shutdown.recv() => {
+                    info!("P2P network shutting down.");
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn send_request(
+        &mut self,
+        peer_id: PeerId,
+        message: P2PMessage,
+    ) -> P2PResult<()> {
+        if let Some(serialized_size) = bincode::serialized_size(&message).ok() {
+            if serialized_size as usize > MAX_CHUNK_SIZE {
+                return self.send_chunked(peer_id, message).await;
+            }
+        }
+        // Send the request directly for small messages
+        self.swarm.behaviour_mut().request_response.send_request(&peer_id, message)
+            .map(|_| ())
+            .map_err(|e| P2PError::NetworkError(Box::new(e)))
+    }
+
+    /// Sends a chunked message to a peer.
+    async fn send_chunked(&mut self, peer_id: PeerId, message: P2PMessage) -> P2PResult<()> {
+        // Serialize the message
+        let serialized = bincode::serialize(&message)
+            .map_err(P2PError::SerializationError)?;
+        
+        // Split message into chunks
+        let message_id = rand::random();
+        let chunks: Vec<_> = serialized.chunks(MAX_CHUNK_SIZE).collect();
+        let total_chunks = chunks.len();
+        
+        // Send each chunk with a header
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let header = ChunkHeader {
+                message_id,
+                total_chunks: total_chunks as u16,
+                chunk_index: index as u16,
+                total_size: serialized.len() as u32,
+            };
+            
+            // Serialize header and combine with chunk data
+            let mut chunk_data = bincode::serialize(&header)
+                .map_err(P2PError::SerializationError)?;
+            chunk_data.extend_from_slice(chunk);
+            
+            // Create and send chunk message
+            let chunk_message = P2PMessage::Chunk(chunk_data);
+            self.swarm.behaviour_mut().request_response.send_request(&peer_id, chunk_message)
+                .map(|_| ())
+                .map_err(|e| P2PError::NetworkError(Box::new(e)))?;
+        }
+        
+        Ok(())
+    }
+
+    /// Handles an inbound request from a peer.
+    pub async fn handle_inbound_request(
+        &mut self,
+        request: P2PMessage,
+        channel: ResponseChannel<P2PMessage>,
+    ) -> P2PResult<()> {
+        // Dummy implementation for now
+        debug!("Received inbound request: {:?}", request);
+        Ok(())
+    }
+
+    /// Handles an inbound response from a peer.
+    pub async fn handle_inbound_response(&mut self, response: P2PMessage) -> P2PResult<()> {
+        // Dummy implementation for now
+        debug!("Received inbound response: {:?}", response);
+        Ok(())
+    }
+}
+
+pub struct PersistentPeerList {
+    pub peers: Vec<String>, // Multiaddr as string
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use libp2p::{identity, swarm::SwarmBuilder};
+    use tokio::time::Duration;
+    use std::iter;
+
+    #[tokio::test]
+    async fn test_network_startup() -> P2PResult<()> {
+        let config = RustyCoinNetworkConfig::default();
+        let mut network = P2PNetwork::new(config).await?;
+        let (shutdown_send, shutdown_recv) = tokio::sync::broadcast::channel(1);
+
+        tokio::spawn(async move {
+            network.start_with_shutdown(shutdown_recv).await
+        });
+
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        
+        let _ = shutdown_send.send(());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_peer_connection_and_message_exchange() -> P2PResult<()> {
+        let _ = env_logger::try_init();
+
+        // Create two network instances
+        let config1 = RustyCoinNetworkConfig::default();
+        let mut network1 = P2PNetwork::new(config1).await?;
+        let config2 = RustyCoinNetworkConfig::default();
+        let mut network2 = P2PNetwork::new(config2).await?;
+
+        // Get listen addresses
+        let addr1 = "/ip4/127.0.0.1/tcp/0".parse()?;
+        let addr2 = "/ip4/127.0.0.1/tcp/0".parse()?;
+
+        // Listen on random ports
+        let _ = network1.swarm.listen_on(addr1)?;
+        let _ = network2.swarm.listen_on(addr2)?;
+
+        // Get the actual listening addresses
+        let listen_addrs1: Vec<_> = network1.swarm.listeners().cloned().collect();
+        let listen_addrs2: Vec<_> = network2.swarm.listeners().cloned().collect();
+
+        assert!(!listen_addrs1.is_empty(), "Network 1 should have listening addresses");
+        assert!(!listen_addrs2.is_empty(), "Network 2 should have listening addresses");
+
+        // Try to connect network2 to network1
+        network2.swarm.dial(listen_addrs1[0].clone())?;
+
+        // Run both networks in the background
+        let (shutdown_send, mut shutdown_recv) = tokio::sync::broadcast::channel(1);
+        
+        let handle1 = tokio::spawn({
+            let mut network = network1;
+            let mut recv = shutdown_recv.resubscribe();
+            async move {
+                tokio::select! {
+                    _ = network.start_with_shutdown(recv) => {}
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
+        });
+
+        let handle2 = tokio::spawn({
+            let mut network = network2;
+            let mut recv = shutdown_recv.resubscribe();
+            async move {
+                tokio::select! {
+                    _ = network.start_with_shutdown(recv) => {}
+                    _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                }
+            }
+        });
+
+        // Wait for connection to be established
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        // Test sending a message
+        let peer1_id = *network1.local_peer_id();
+        let peer2_id = *network2.local_peer_id();
+        
+        // Send a message from network1 to network2
+        let message = P2PMessage::Ping { nonce: 1234 };
+        network1.send_request(peer2_id, message.clone()).await?;
+
+        // Clean up
+        let _ = shutdown_send.send(());
+        let _ = futures::future::join(handle1, handle2).await;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum CombinedConnectionHandlerEvent {
+    Gossipsub(<Gossipsub as NetworkBehaviour>::ConnectionHandler::OutEvent),
+    Identify(<Identify as NetworkBehaviour>::ConnectionHandler::OutEvent),
+    Ping(<Ping as NetworkBehaviour>::ConnectionHandler::OutEvent),
+    BlockSync(<RequestResponse<BlockSyncCodec> as NetworkBehaviour>::ConnectionHandler::OutEvent),
+    TxProp(<RequestResponse<TxPropCodec> as NetworkBehaviour>::ConnectionHandler::OutEvent),
+    PeerDiscovery(<PeerDiscovery as NetworkBehaviour>::ConnectionHandler::OutEvent),
+}
+
+pub struct CombinedConnectionHandler {
+    gossipsub: <Gossipsub as NetworkBehaviour>::ConnectionHandler,
+    identify: <Identify as NetworkBehaviour>::ConnectionHandler,
+    ping: <Ping as NetworkBehaviour>::ConnectionHandler,
+    request_response: <RequestResponse<BlockSyncCodec> as NetworkBehaviour>::ConnectionHandler,
+    tx_propagation: <RequestResponse<TxPropCodec> as NetworkBehaviour>::ConnectionHandler,
+    peer_discovery: <PeerDiscovery as NetworkBehaviour>::ConnectionHandler,
+}
+
+impl ConnectionHandler for CombinedConnectionHandler {
+    type InEvent = CombinedConnectionHandlerEvent;
+    type OutEvent = CombinedConnectionHandlerEvent;
+    type Error = P2PError; // Or a more specific error type if needed
+    type InboundOpenInfo = <Gossipsub as NetworkBehaviour>::ConnectionHandler::InboundOpenInfo;
+    type OutboundOpenInfo = <Gossipsub as NetworkBehaviour>::ConnectionHandler::OutboundOpenInfo;
+
+    fn listen_protocol(&self) -> SubstreamProtocol<Self::InboundOpenInfo> {
+        // This method should not be called on the combined handler as it delegates
+        // to inner handlers. The NetworkBehaviour::addresses_of_peer should be used
+        // for address management. Leaving as unimplemented for now.
+        unimplemented!("CombinedConnectionHandler does not have a single listen protocol")
+    }
+
+    fn on_behaviour_event(&mut self, event: Self::InEvent) {
+        match event {
+            CombinedConnectionHandlerEvent::Gossipsub(e) => self.gossipsub.on_behaviour_event(e),
+            CombinedConnectionHandlerEvent::Identify(e) => self.identify.on_behaviour_event(e),
+            CombinedConnectionHandlerEvent::Ping(e) => self.ping.on_behaviour_event(e),
+            CombinedConnectionHandlerEvent::BlockSync(e) => self.request_response.on_behaviour_event(e),
+            CombinedConnectionHandlerEvent::TxProp(e) => self.tx_propagation.on_behaviour_event(e),
+            CombinedConnectionHandlerEvent::PeerDiscovery(e) => self.peer_discovery.on_behaviour_event(e),
+        }
+    }
+
+    fn connection_keep_alive(&mut self) -> KeepAlive {
+        // Delegate to inner handlers to determine the overall keep-alive status
+        let mut keep_alive = KeepAlive::No;
+        if let KeepAlive::Until(t) = self.gossipsub.connection_keep_alive() {
+            keep_alive = KeepAlive::Until(t);
+        }
+        if let KeepAlive::Until(t) = self.identify.connection_keep_alive() {
+            keep_alive = KeepAlive::Until(t);
+        }
+        if let KeepAlive::Until(t) = self.ping.connection_keep_alive() {
+            keep_alive = KeepAlive::Until(t);
+        }
+        if let KeepAlive::Until(t) = self.request_response.connection_keep_alive() {
+            keep_alive = KeepAlive::Until(t);
+        }
+        if let KeepAlive::Until(t) = self.tx_propagation.connection_keep_alive() {
+            keep_alive = KeepAlive::Until(t);
+        }
+        if let KeepAlive::Until(t) = self.peer_discovery.connection_keep_alive() {
+            keep_alive = KeepAlive::Until(t);
+        }
+        keep_alive
+    }
+
+    fn poll(
+        &mut self,
+        cx: &mut Context,
+    ) -> Poll<ConnectionHandlerEvent<Self::InboundOpenInfo, Self::OutboundOpenInfo, Self::Error>> {
+        // Poll each inner handler and combine their events
+        if let Poll::Ready(event) = self.gossipsub.poll(cx) {
+            return Poll::Ready(event.map_out(CombinedConnectionHandlerEvent::Gossipsub));
+        }
+        if let Poll::Ready(event) = self.identify.poll(cx) {
+            return Poll::Ready(event.map_out(CombinedConnectionHandlerEvent::Identify));
+        }
+        if let Poll::Ready(event) = self.ping.poll(cx) {
+            return Poll::Ready(event.map_out(CombinedConnectionHandlerEvent::Ping));
+        }
+        if let Poll::Ready(event) = self.request_response.poll(cx) {
+            return Poll::Ready(event.map_out(CombinedConnectionHandlerEvent::BlockSync));
+        }
+        if let Poll::Ready(event) = self.tx_propagation.poll(cx) {
+            return Poll::Ready(event.map_out(CombinedConnectionHandlerEvent::TxProp));
+        }
+        if let Poll::Ready(event) = self.peer_discovery.poll(cx) {
+            return Poll::Ready(event.map_out(CombinedConnectionHandlerEvent::PeerDiscovery));
+        }
+        Poll::Pending
+    }
+}
+
+impl NetworkBehaviour for CombinedBehaviour {
+    type ConnectionHandler = CombinedConnectionHandler;
+    type OutEvent = RustyCoinEvent;
+    type PollParameters = <PeerDiscovery as NetworkBehaviour>::PollParameters;
+
+    fn new_handler(&mut self) -> Self::ConnectionHandler {
+        Self::ConnectionHandler {
+            gossipsub: self.gossipsub.new_handler(),
+            identify: self.identify.new_handler(),
+            ping: self.ping.new_handler(),
+            request_response: self.request_response.new_handler(),
+            tx_propagation: self.tx_propagation.new_handler(),
+            peer_discovery: self.peer_discovery.new_handler(),
+        }
+    }
+
+    fn inject_connection_established(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: &ConnectionId,
+        endpoint: &ConnectedPoint,
+        established_info: &<Self::ConnectionHandler as ConnectionHandler>::EstablishedInfo,
+    ) {
+        self.gossipsub.inject_connection_established(peer_id, connection_id, endpoint, established_info.as_ref().map(|info| info.gossipsub_info).unwrap_or_default());
+        self.identify.inject_connection_established(peer_id, connection_id, endpoint, established_info.as_ref().map(|info| info.identify_info).unwrap_or_default());
+        self.ping.inject_connection_established(peer_id, connection_id, endpoint, established_info.as_ref().map(|info| info.ping_info).unwrap_or_default());
+        self.request_response.inject_connection_established(peer_id, connection_id, endpoint, established_info.as_ref().map(|info| info.request_response_info).unwrap_or_default());
+        self.tx_propagation.inject_connection_established(peer_id, connection_id, endpoint, established_info.as_ref().map(|info| info.tx_propagation_info).unwrap_or_default());
+        self.peer_discovery.inject_connection_established(peer_id, connection_id, endpoint, established_info.as_ref().map(|info| info.peer_discovery_info).unwrap_or_default());
+    }
+
+    fn inject_connection_closed(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: &ConnectionId,
+        endpoint: &ConnectedPoint,
+        handler: <Self::ConnectionHandler as ConnectionHandler>::ClosedInfo,
+    ) {
+        self.gossipsub.inject_connection_closed(peer_id, connection_id, endpoint, handler.gossipsub);
+        self.identify.inject_connection_closed(peer_id, connection_id, endpoint, handler.identify);
+        self.ping.inject_connection_closed(peer_id, connection_id, endpoint, handler.ping);
+        self.request_response.inject_connection_closed(peer_id, connection_id, endpoint, handler.request_response);
+        self.tx_propagation.inject_connection_closed(peer_id, connection_id, endpoint, handler.tx_propagation);
+        self.peer_discovery.inject_connection_closed(peer_id, connection_id, endpoint, handler.peer_discovery);
+    }
+
+    fn inject_address_change(
+        &mut self,
+        peer_id: &PeerId,
+        connection_id: &ConnectionId,
+        old: &ConnectedPoint,
+        new: &ConnectedPoint,
+    ) {
+        self.gossipsub.inject_address_change(peer_id, connection_id, old, new);
+        self.identify.inject_address_change(peer_id, connection_id, old, new);
+        self.ping.inject_address_change(peer_id, connection_id, old, new);
+        self.request_response.inject_address_change(peer_id, connection_id, old, new);
+        self.tx_propagation.inject_address_change(peer_id, connection_id, old, new);
+        self.peer_discovery.inject_address_change(peer_id, connection_id, old, new);
+    }
+
+    fn inject_dial_failure(
+        &mut self,
+        peer_id: Option<PeerId>,
+        handler: Self::ConnectionHandler,
+        error: &libp2p::swarm::DialError,
+    ) {
+        self.gossipsub.inject_dial_failure(peer_id, handler.gossipsub, error);
+        self.identify.inject_dial_failure(peer_id, handler.identify, error);
+        self.ping.inject_dial_failure(peer_id, handler.ping, error);
+        self.request_response.inject_dial_failure(peer_id, handler.request_response, error);
+        self.tx_propagation.inject_dial_failure(peer_id, handler.tx_propagation, error);
+        self.peer_discovery.inject_dial_failure(peer_id, handler.peer_discovery, error);
+    }
+
+    fn inject_new_listener(&mut self, id: ListenerId) {
+        self.gossipsub.inject_new_listener(id);
+        self.identify.inject_new_listener(id);
+        self.ping.inject_new_listener(id);
+        self.request_response.inject_new_listener(id);
+        self.tx_propagation.inject_new_listener(id);
+        self.peer_discovery.inject_new_listener(id);
+    }
+
+    fn inject_new_listen_addr(&mut self, id: ListenerId, addr: &Multiaddr) {
+        self.gossipsub.inject_new_listen_addr(id, addr);
+        self.identify.inject_new_listen_addr(id, addr);
+        self.ping.inject_new_listen_addr(id, addr);
+        self.request_response.inject_new_listen_addr(id, addr);
+        self.tx_propagation.inject_new_listen_addr(id, addr);
+        self.peer_discovery.inject_new_listen_addr(id, addr);
+    }
+
+    fn inject_expired_listen_addr(&mut self, id: ListenerId, addr: &Multiaddr) {
+        self.gossipsub.inject_expired_listen_addr(id, addr);
+        self.identify.inject_expired_listen_addr(id, addr);
+        self.ping.inject_expired_listen_addr(id, addr);
+        self.request_response.inject_expired_listen_addr(id, addr);
+        self.tx_propagation.inject_expired_listen_addr(id, addr);
+        self.peer_discovery.inject_expired_listen_addr(id, addr);
+    }
+
+    fn inject_listener_error(&mut self, id: ListenerId, err: &(dyn std::error::Error + 'static)) {
+        self.gossipsub.inject_listener_error(id, err);
+        self.identify.inject_listener_error(id, err);
+        self.ping.inject_listener_error(id, err);
+        self.request_response.inject_listener_error(id, err);
+        self.tx_propagation.inject_listener_error(id, err);
+        self.peer_discovery.inject_listener_error(id, err);
+    }
+
+    fn inject_listener_closed(&mut self, id: ListenerId, reason: Result<(), &std::io::Error>) {
+        self.gossipsub.inject_listener_closed(id, reason);
+        self.identify.inject_listener_closed(id, reason);
+        self.ping.inject_listener_closed(id, reason);
+        self.request_response.inject_listener_closed(id, reason);
+        self.tx_propagation.inject_listener_closed(id, reason);
+        self.peer_discovery.inject_listener_closed(id, reason);
+    }
+
+    fn inject_handler_event(
+        &mut self,
+        peer_id: PeerId,
+        connection_id: ConnectionId,
+        event: <<Self::ConnectionHandler as ConnectionHandler>::Self as ConnectionHandler>::OutEvent,
+    ) {
+        match event {
+            CombinedConnectionHandlerEvent::Gossipsub(e) => self.gossipsub.inject_event(peer_id, connection_id, THandlerInEvent::from(e)),
+            CombinedConnectionHandlerEvent::Identify(e) => self.identify.inject_event(peer_id, connection_id, THandlerInEvent::from(e)),
+            CombinedConnectionHandlerEvent::Ping(e) => self.ping.inject_event(peer_id, connection_id, THandlerInEvent::from(e)),
+            CombinedConnectionHandlerEvent::BlockSync(e) => self.request_response.inject_event(peer_id, connection_id, THandlerInEvent::from(e)),
+            CombinedConnectionHandlerEvent::TxProp(e) => self.tx_propagation.inject_event(peer_id, connection_id, THandlerInEvent::from(e)),
+            CombinedConnectionHandlerEvent::PeerDiscovery(e) => self.peer_discovery.inject_event(peer_id, connection_id, THandlerInEvent::from(e)),
+        }
+    }
+
+    fn poll(
+        &mut self,
+        cx: &mut Context,
+        poll_parameters: &mut impl PollParameters,
+    ) -> Poll<NetworkBehaviourAction<Self::OutEvent, Self::ConnectionHandler>> {
+        let mut actions = VecDeque::new();
+
+        while let Poll::Ready(action) = self.gossipsub.poll(cx, poll_parameters) {
+            actions.push_back(action.map_out(RustyCoinEvent::Gossipsub));
+        }
+        while let Poll::Ready(action) = self.identify.poll(cx, poll_parameters) {
+            actions.push_back(action.map_out(RustyCoinEvent::Identify));
+        }
+        while let Poll::Ready(action) = self.ping.poll(cx, poll_parameters) {
+            actions.push_back(action.map_out(RustyCoinEvent::Ping));
+        }
+        while let Poll::Ready(action) = self.request_response.poll(cx, poll_parameters) {
+            actions.push_back(action.map_out(RustyCoinEvent::BlockSync));
+        }
+        while let Poll::Ready(action) = self.tx_propagation.poll(cx, poll_parameters) {
+            actions.push_back(action.map_out(RustyCoinEvent::TxProp));
+        }
+        while let Poll::Ready(action) = self.peer_discovery.poll(cx, poll_parameters) {
+            actions.push_back(action.map_out(RustyCoinEvent::PeerDiscovery));
+        }
+
+        if let Some(action) = actions.pop_front() {
+            Poll::Ready(action)
+        } else {
+            Poll::Pending
+        }
+    }
+}

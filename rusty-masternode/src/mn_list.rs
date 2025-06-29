@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use rusty_shared_types::Hash;
-use rusty_core::masternode::{MasternodeID, MasternodeEntry};
+use rusty_shared_types::masternode::{MasternodeID, MasternodeEntry};
 use rusty_core::consensus::state::BlockchainState;
 
 pub struct MasternodeListManager {

@@ -1,0 +1,22 @@
+"tcp-tokio",
+    "dns-tokio",
+    "yamux",
+    "noise",
+    "kad",
+    "mdns",
+    "identify",
+    "ping"
+]}
+=======
+libp2p = { version = "0.54.1", default-features = false, features = [
+    "tcp-tokio",
+    "dns-tokio",
+    "yamux",
+    "noise",
+    "kad",
+    "mdns",
+    "identify",
+    "ping",
+    "gossipsub",
+    "request-response"
+]}

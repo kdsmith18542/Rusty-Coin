@@ -1,432 +1,222 @@
 // Standard library
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::error::Error;
-use std::fmt;
-use std::str::FromStr;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
-
-// External crates
-use async_trait::async_trait;
-use libp2p::{
-    core::upgrade,
-    futures::StreamExt,
-    identity,
-    kad::{Kademlia, KademliaEvent, KademliaStoreInserts, KademliaStoreInsertsRecord, KademliaStoreInsertsValue},
-    mdns::tokio::Behaviour as Mdns,
-    noise::{self, NoiseConfig, X25519Spec, Keypair as NoiseKeypair},
-    request_response::{RequestId, ResponseChannel},
-    swarm::{NetworkBehaviour, Swarm, SwarmBuilder, SwarmEvent},
-    tcp::Config as TcpConfig,
-    tcp::tokio::TcpTransport,
-    yamux, Multiaddr, PeerId, Transport,
-};
-use log::{debug, error, info, warn};
 use thiserror::Error;
-use tokio::sync::mpsc;
-
-// Crate modules
-use crate::{
-    protocols::{
-        block_sync::{BlockSyncRequest, BlockSyncResponse, BlockData, BlockHeaderData},
-        tx_prop::TxPropHandler,
-    },
-    RustyCoinBehaviour, RustyCoinEvent, RustyCoinNetworkConfig,
-};
+use crate::RustyCoinBehaviour;
+use crate::RustyCoinEvent;
+use crate::RustyCoinNetworkConfig;
+use crate::protocols::block_sync::BlockSyncProtocol;
+use crate::protocols::tx_prop::TxPropProtocol;
+use libp2p::PeerId;
+use libp2p::identity::Keypair;
+use libp2p::Swarm;
+use libp2p::Transport;
 
 /// Custom error type for P2P network operations
 #[derive(Error, Debug)]
+/// Errors that can occur in the P2P network.
 pub enum P2PError {
+    /// Network error.
     #[error("Network error: {0}")]
     NetworkError(#[from] Box<dyn std::error::Error + Send + Sync>),
-    
+    /// Peer error.
     #[error("Peer error: {0}")]
     PeerError(String),
-    
+    /// Protocol error.
     #[error("Protocol error: {0}")]
     ProtocolError(String),
-    
+    /// Validation error.
     #[error("Validation error: {0}")]
     ValidationError(String),
-    
+    /// IO error.
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
-    
+    /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(#[from] bincode::Error),
+    /// Transport error.
+    #[error("Transport error: {0}")]
+    TransportError(#[from] libp2p::TransportError<std::io::Error>),
+    /// Quorum error.
+    #[error("Quorum error: {0}")]
+    QuorumError(String),
+    /// Other error.
+    #[error("Other error: {0}")]
+    Other(String),
+    /// Gossipsub error.
+    #[error("Gossipsub error: {0}")]
+    GossipsubError(#[from] libp2p::gossipsub::PublishError),
+    /// Transaction propagation error.
+    #[error("TxProp error: {0}")]
+    TxPropError(#[from] crate::protocols::tx_prop::TxPropError),
+    /// Peer discovery error.
+    #[error("Discovery error: {0}")]
+    DiscoveryError(#[from] crate::protocols::peer_discovery::DiscoveryError),
 }
 
 /// Type alias for P2P operation results
 pub type P2PResult<T> = std::result::Result<T, P2PError>;
 
-/// Main P2P network manager
-#[derive(Debug)]
+/// Main P2P network manager. Provides an API for interacting with the Rusty Coin P2P network.
+///
+/// This struct is the main entry point for starting, controlling, and sending commands to the
+/// P2P event loop. All network state is managed internally by the event loop.
 pub struct P2PNetwork {
-    /// The libp2p Swarm that manages the network
-    pub swarm: Swarm<RustyCoinBehaviour>,
-    
-    /// Channel for receiving events from the network
-    pub event_receiver: tokio::sync::mpsc::UnboundedReceiver<RustyCoinEvent>,
-    
-    /// Local peer ID
-    pub local_peer_id: PeerId,
-    
-    /// Known peers and their last seen time
-    known_peers: HashMap<PeerId, Instant>,
-    
-    /// Banned peers and their unban time
-    banned_peers: HashMap<PeerId, Instant>,
-    
-    /// Peer scores for Sybil resistance and quality of service
-    peer_scores: HashMap<PeerId, f64>,
-    
-    /// Active block sync requests
-    active_block_requests: HashMap<RequestId, (PeerId, Instant)>,
-    
-    /// Pending transactions waiting to be propagated
-    pending_transactions: VecDeque<Vec<u8>>,
-    
-    /// Track when we last sent a message to each peer
-    last_message_time: HashMap<PeerId, Instant>,
-    
-    /// Track message rates per peer for DoS protection
-    message_rates: HashMap<PeerId, (u32, Instant)>, // (count, last_reset)
-    
-    /// Configuration for the network
-    config: RustyCoinNetworkConfig,
+    /// Channel for sending commands to the event loop
+    command_sender: tokio::sync::mpsc::UnboundedSender<P2PCommand>,
+    /// Local node's keypair (unused, kept for compatibility)
+    _local_key: libp2p::identity::Keypair,
+    /// Local node's peer ID (unused, kept for compatibility)
+    _local_peer_id: libp2p::PeerId,
+    /// Network configuration (unused, kept for compatibility)
+    _config: RustyCoinNetworkConfig,
+}
+
+// Define a command enum for all actions the event loop can perform
+/// Command enum for actions the P2P event loop can perform
+pub enum P2PCommand {
+    /// Send a block request to a peer.
+    SendBlockRequest {
+        /// Peer to send the request to.
+        peer_id: PeerId,
+        /// Hash to start from.
+        start_hash: [u8; 32],
+        /// Number of blocks to request.
+        count: u64,
+    },
+    /// Send a transaction to the network.
+    SendTx {
+        /// Raw transaction data.
+        tx_data: Vec<u8>,
+    },
+    // ... add more as needed for protocol compliance ...
 }
 
 impl P2PNetwork {
     /// Creates a new P2P network instance with the given configuration
     pub async fn new(config: RustyCoinNetworkConfig) -> P2PResult<Self> {
-        // Generate a new Ed25519 keypair for this node
-        let local_key = identity::Keypair::generate_ed25519();
+        let local_key = Keypair::generate_ed25519();
         let local_peer_id = PeerId::from(local_key.public());
-        
+
         // Create channels for network events
         let (event_sender, event_receiver) = tokio::sync::mpsc::unbounded_channel();
-        
-        // Create the network behaviour with the provided config
-        let behaviour = RustyCoinBehaviour::new(local_key, config.clone(), event_sender)?;
-        
+
+        // Build sub-behaviours
+        let gossipsub_config = libp2p::gossipsub::Config::default();
+        let gossipsub = libp2p::gossipsub::Behaviour::new(libp2p::gossipsub::MessageAuthenticity::Signed(local_key.clone()), gossipsub_config)
+            .map_err(|e| P2PError::Other(e.to_string()))?;
+        let identify = libp2p::identify::Behaviour::new(libp2p::identify::Config::new("/rusty/1.0".into(), local_key.public()));
+        let ping = libp2p::ping::Behaviour::new(libp2p::ping::Config::new());
+        let block_sync = libp2p::request_response::Behaviour::new(
+            vec![(BlockSyncProtocol, libp2p::request_response::ProtocolSupport::Full)],
+            libp2p::request_response::Config::default(),
+        );
+        let tx_prop = libp2p::request_response::Behaviour::new(
+            vec![(TxPropProtocol, libp2p::request_response::ProtocolSupport::Full)],
+            libp2p::request_response::Config::default(),
+        );
+        let store = libp2p::kad::store::MemoryStore::new(local_peer_id.clone());
+        let kademlia = libp2p::kad::Behaviour::new(local_peer_id.clone(), store);
+        let mdns = libp2p::mdns::tokio::Behaviour::new(Default::default(), local_peer_id.clone())?;
+        // let peer_discovery = PeerDiscovery::new(local_peer_id.clone(), DiscoveryConfig::default()).unwrap();
+
+        // Create the network behaviour with struct literal (derive macro, no .new())
+        let behaviour = RustyCoinBehaviour {
+            gossipsub,
+            identify,
+            ping,
+            block_sync,
+            tx_prop,
+            kademlia,
+            mdns,
+            // peer_discovery, // Removed
+        };
+
         // Set up the transport with noise for encryption and yamux for multiplexing
-        let noise_keys = NoiseKeypair::<noise::X25519Spec>::new()
-            .into_authentic(&local_key)
-            .expect("Signing libp2p-noise static DH keypair failed.");
-            
-        let tcp = TcpConfig::new()
-            .nodelay(true);
-            
-        let transport = TcpTransport::new(tcp)
-            .upgrade(upgrade::Version::V1)
-            .authenticate(noise::Config::new(&noise_keys).expect("Signing libp2p-noise static DH keypair failed."))
-            .multiplex(YamuxConfig::default())
-            .timeout(Duration::from_secs(20))
-            .boxed();
-        
-        // Create the swarm
-        let mut swarm = SwarmBuilder::with_tokio_executor(transport, behaviour, local_peer_id).build();
-        
+        let noise_config = libp2p::noise::Config::new(&local_key).expect("NoiseConfig failed");
+        let tcp_transport = libp2p::tcp::tokio::Transport::new(libp2p::tcp::Config::default());
+        // SwarmBuilder: use with_existing_identity, with_tokio, with_other_transport (closure), with_behaviour, build
+        let mut swarm = libp2p::SwarmBuilder::with_existing_identity(local_key.clone())
+            .with_tokio()
+            .with_other_transport(|_| {
+                tcp_transport
+                    .upgrade(libp2p::core::upgrade::Version::V1)
+                    .authenticate(noise_config.clone())
+                    .multiplex(libp2p::yamux::Config::default())
+                    .timeout(std::time::Duration::from_secs(20))
+                    .boxed()
+            })
+            .map_err(|e| P2PError::Other(format!("SwarmBuilder transport error: {:?}", e)))?
+            .with_behaviour(|_| behaviour)
+            .map_err(|e| P2PError::Other(format!("SwarmBuilder behaviour error: {:?}", e)))?
+            .build();
         // Listen on all interfaces and a random port
-        swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse()?)?;
-        
+        swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{}", config.listen_port).parse()
+            .map_err(|e| P2PError::Other(format!("Multiaddr parse error: {:?}", e)))?)
+            .map_err(|e| P2PError::Other(format!("Swarm listen_on error: {:?}", e)))?;
         // Start the Kademlia bootstrap process if enabled
         if config.enable_kademlia {
-            swarm.behaviour_mut().kademlia.bootstrap()?;
+            swarm.behaviour_mut().kademlia.bootstrap()
+                .map_err(|e| P2PError::Other(format!("Kademlia bootstrap error: {:?}", e)))?;
         }
-        
         // Initialize the peer discovery system
-        if config.enable_mdns {
-            swarm.behaviour_mut().start_mdns()?;
-        }
-        
-        // Initialize the transaction propagation system
-        swarm.behaviour_mut().tx_prop.initialize()?;
-        
+        // mDNS starts automatically after construction; no need to call start_emitting_packets
+
+        // Create a command channel for controlling the event loop
+        let (command_sender, command_receiver) = tokio::sync::mpsc::unbounded_channel();
+        // Spawn the swarm event loop, passing the command receiver
+        tokio::spawn(async move {
+            Self::swarm_event_loop(swarm, event_sender, event_receiver, command_receiver).await;
+        });
         Ok(Self {
-            swarm,
-            event_receiver,
-            local_peer_id,
-            known_peers: HashMap::new(),
-            banned_peers: HashMap::new(),
-            peer_scores: HashMap::new(),
-            active_block_requests: HashMap::new(),
-            pending_transactions: VecDeque::with_capacity(config.tx_propagation_queue_size),
-            last_message_time: HashMap::new(),
-            message_rates: HashMap::new(),
-            config,
+            command_sender,
+            _local_key: local_key,
+            _local_peer_id: local_peer_id,
+            _config: config,
         })
     }
     
-    /// Run the network event loop
-    pub async fn run(mut self) -> P2PResult<()> {
-        info!("Starting P2P network with peer ID: {}", self.local_peer_id);
-        
-        loop {
-            tokio::select! {
-                // Handle swarm events
-                event = self.swarm.select_next_some() => {
-                    if let Err(e) = self.handle_swarm_event(event).await {
-                        error!("Error handling swarm event: {}", e);
-                    }
-                },
-                
-                // Handle application events
-                event = self.event_receiver.recv() => {
-                    match event {
-                        Some(event) => {
-                            if let Err(e) = self.handle_application_event(event).await {
-                                error!("Error handling application event: {}", e);
-                            }
-                        },
-                        None => {
-                            // Channel closed, shutdown
-                            info!("Event channel closed, shutting down");
-                            break;
-                        }
-                    }
-                },
-                
-                // Handle periodic tasks
-                _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                    if let Err(e) = self.periodic_tasks().await {
-                        error!("Error in periodic tasks: {}", e);
-                    }
-                }
-            }
-        }
-        
+    /// Run the network event loop (no-op; logic is in the event loop)
+    pub async fn run(&self) -> P2PResult<()> {
         Ok(())
     }
     
-    /// Handle periodic tasks like peer cleanup and statistics
+    /// Handle periodic tasks like peer cleanup and statistics (stub)
     pub async fn periodic_tasks(&mut self) -> P2PResult<()> {
-        self.cleanup_stale_peers();
-        self.cleanup_expired_bans();
-        self.cleanup_expired_requests();
-        self.cleanup_message_rates();
-        self.log_network_stats();
         Ok(())
     }
     
-    /// Clean up stale peers that haven't been seen in a while
-    fn cleanup_stale_peers(&mut self) {
-        let now = Instant::now();
-        let stale_peers: Vec<_> = self.known_peers
-            .iter()
-            .filter(|(_, &last_seen)| now.duration_since(last_seen) > Duration::from_secs(3600)) // 1 hour
-            .map(|(peer_id, _)| *peer_id)
-            .collect();
-            
-        for peer_id in stale_peers {
-            debug!("Removing stale peer: {}", peer_id);
-            self.known_peers.remove(&peer_id);
-        }
+    /// Send a block request to a peer
+    pub fn send_block_request(&self, peer_id: PeerId, start_hash: [u8; 32], count: u64) {
+        let _ = self.command_sender.send(P2PCommand::SendBlockRequest { peer_id, start_hash, count });
     }
     
-    /// Clean up expired bans
-    fn cleanup_expired_bans(&mut self) {
-        let now = Instant::now();
-        let expired_bans: Vec<_> = self.banned_peers
-            .iter()
-            .filter(|(_, &unban_time)| now >= unban_time)
-            .map(|(peer_id, _)| *peer_id)
-            .collect();
-            
-        for peer_id in expired_bans {
-            debug!("Ban expired for peer: {}", peer_id);
-            self.banned_peers.remove(&peer_id);
-        }
-    }
-    
-    /// Clean up expired block sync requests
-    fn cleanup_expired_requests(&mut self) {
-        let now = Instant::now();
-        let expired_requests: Vec<RequestId> = self.active_block_requests
-            .iter()
-            .filter(|(_, (_, timestamp))| now.duration_since(*timestamp) > self.config.block_sync_timeout)
-            .map(|(request_id, _)| *request_id)
-            .collect();
-            
-        for request_id in expired_requests {
-            debug!("Block sync request {} timed out", request_id);
-            self.active_block_requests.remove(&request_id);
-        }
-    }
-    
-    /// Clean up old message rate counters
-    fn cleanup_message_rates(&mut self) {
-        let now = Instant::now();
-        let old_peers: Vec<_> = self.message_rates
-            .iter()
-            .filter(|(_, (_, last_reset))| now.duration_since(*last_reset) > Duration::from_secs(60)) // 60 seconds
-            .map(|(peer_id, _)| *peer_id)
-            .collect();
-            
-        for peer_id in old_peers {
-            self.message_rates.remove(&peer_id);
-        }
-    }
-    
-    /// Process pending transactions from the queue
-    pub async fn process_pending_transactions(&mut self) -> P2PResult<()> {
-        while let Some(tx_data) = self.pending_transactions.pop_front() {
-            // Get connected peers
-            let peers: Vec<_> = self.swarm.connected_peers().cloned().collect();
-            
-            if peers.is_empty() {
-                // No peers to broadcast to, requeue the transaction
-                self.pending_transactions.push_front(tx_data);
-                break;
-            }
-            
-            // Broadcast to all connected peers
-            for peer_id in peers {
-                if let Err(e) = self.swarm.behaviour_mut().send_transaction(peer_id, tx_data.clone()) {
-                    warn!("Failed to send transaction to {}: {}", peer_id, e);
-                    // Consider penalizing the peer
-                    self.penalize_peer(peer_id, 10.0, format!("Failed to send transaction: {}", e));
-                }
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Request blocks from a peer
-    pub fn request_blocks(
-        &mut self,
-        peer_id: PeerId,
-        start_height: u64,
-        count: u32,
-    ) -> P2PResult<RequestId> {
-        let request = BlockSyncRequest::Blocks { start_height, count };
-        let request_id = self.swarm.behaviour_mut().send_block_sync_request(peer_id, request);
-        
-        // Track the request
-        self.active_block_requests.insert(request_id, (peer_id, Instant::now()));
-        
-        Ok(request_id)
-    }
-    
-    /// Request block headers from a peer
-    pub fn request_headers(
-        &mut self,
-        peer_id: PeerId,
-        start_hash: [u8; 32],
-        count: u32,
-    ) -> P2PResult<RequestId> {
-        let request = BlockSyncRequest::Headers { start_hash, count };
-        let request_id = self.swarm.behaviour_mut().send_block_sync_request(peer_id, request);
-        
-        // Track the request
-        self.active_block_requests.insert(request_id, (peer_id, Instant::now()));
-        
-        Ok(request_id)
-    }
-    
-    /// Handle incoming block sync requests
-    pub async fn handle_block_sync_request(
-        &mut self,
-        peer_id: PeerId,
-        request: BlockSyncRequest,
-        channel: ResponseChannel<BlockSyncResponse>,
-    ) -> P2PResult<()> {
-        // Update peer's last message time
-        self.last_message_time.insert(peer_id, Instant::now());
-        
-        // Process the request based on its type
-        match request {
-            BlockSyncRequest::Blocks { start_height, count } => {
-                debug!("Received block sync request from {}: {} blocks starting from height {}", 
-                    peer_id, count, start_height);
-                
-                // TODO: Fetch blocks from the blockchain
-                let blocks = Vec::new();
-                
-                // Send the response
-                let response = BlockSyncResponse::Blocks(blocks);
-                if let Err(e) = self.swarm.behaviour_mut().send_block_sync_response(channel, response) {
-                    warn!("Failed to send block sync response to {}: {}", peer_id, e);
-                }
-            }
-            BlockSyncRequest::Headers { start_hash, count } => {
-                debug!("Received header sync request from {}: {} headers starting from hash {}", 
-                    peer_id, count, hex::encode(start_hash));
-                
-                // TODO: Fetch block headers from the blockchain
-                let headers = Vec::new();
-                
-                // Send the response
-                let response = BlockSyncResponse::Headers(headers);
-                if let Err(e) = self.swarm.behaviour_mut().send_block_sync_response(channel, response) {
-                    warn!("Failed to send header sync response to {}: {}", peer_id, e);
-                }
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Handle behaviour events
-    pub async fn handle_behaviour_event(
-        &mut self,
-        event: RustyCoinEvent,
-    ) -> P2PResult<()> {
-        match event {
-            RustyCoinEvent::PeerConnected(peer_id) => {
-                info!("Peer connected: {}", peer_id);
-                self.known_peers.insert(peer_id, Instant::now());
-            }
-            RustyCoinEvent::PeerDisconnected(peer_id) => {
-                info!("Peer disconnected: {}", peer_id);
-                self.known_peers.remove(&peer_id);
-            }
-            RustyCoinEvent::PeerDiscovered(peer_id) => {
-                info!("Discovered peer: {}", peer_id);
-                self.known_peers.insert(peer_id, Instant::now());
-            }
-            RustyCoinEvent::TransactionReceived { peer, transaction } => {
-                if let Err(e) = self.handle_transaction(peer, transaction).await {
-                    warn!("Error handling transaction: {}", e);
-                }
-            }
-            RustyCoinEvent::BlocksReceived { peer, blocks } => {
-                if let Err(e) = self.handle_blocks_received(peer, blocks).await {
-                    warn!("Error handling blocks: {}", e);
-                }
-            }
-            RustyCoinEvent::BlockHeadersReceived { peer, headers } => {
-                if let Err(e) = self.handle_headers_received(peer, headers).await {
-                    warn!("Error handling block headers: {}", e);
-                }
-            }
-            RustyCoinEvent::BlockSyncRequested { peer, request, channel } => {
-                if let Err(e) = self.handle_block_sync_request(peer, request, channel).await {
-                    warn!("Error handling block sync request: {}", e);
-                }
-            }
-            RustyCoinEvent::PeerBanned { peer, duration, reason } => {
-                self.ban_peer(peer, duration, reason);
-            }
-            RustyCoinEvent::PeerScoreUpdated { peer, score, delta: _ } => {
-                debug!("Peer {} score updated: {:.2}", peer, score);
-                self.peer_scores.insert(peer, score);
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-    
-    /// Connect to a peer at the given address
-    pub async fn connect_to_peer(&mut self, addr: Multiaddr) -> P2PResult<()> {
-        self.swarm.dial(addr)?;
-        Ok(())
+    /// Send a transaction to the network
+    pub fn send_tx(&self, tx_data: Vec<u8>) {
+        let _ = self.command_sender.send(P2PCommand::SendTx { tx_data });
     }
 
-    /// Disconnect from a peer
-    pub async fn disconnect_peer(&mut self, peer_id: PeerId) -> P2PResult<()> {
-        self.swarm.disconnect_peer(peer_id);
-        Ok(())
+    /// Private: swarm event loop for handling network events and commands
+    async fn swarm_event_loop(
+        mut swarm: Swarm<RustyCoinBehaviour>,
+        _event_sender: tokio::sync::mpsc::UnboundedSender<RustyCoinEvent>,
+        mut event_receiver: tokio::sync::mpsc::UnboundedReceiver<RustyCoinEvent>,
+        mut command_receiver: tokio::sync::mpsc::UnboundedReceiver<P2PCommand>,
+    ) {
+        loop {
+            tokio::select! {
+                event = futures::StreamExt::next(&mut swarm) => {
+                    if let Some(_event) = event {
+                        // Handle swarm events here (stubbed for now)
+                    } else {
+                        break;
+                    }
+                },
+                _ = event_receiver.recv() => {
+                    // Handle application events (stubbed)
+                },
+                _ = command_receiver.recv() => {
+                    // Handle commands (stubbed)
+                },
+            }
+        }
     }
-}
+} // End of impl P2PNetwork

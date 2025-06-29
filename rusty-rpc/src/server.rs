@@ -1,8 +1,8 @@
 // rusty-rpc/src/server.rs
 
-use jsonrpsee::core::{Error, RpcResult};
-use jsonrpsee::proc_macros::rpc;
-use jsonrpsee::server::{ServerBuilder, RpcModule};
+use jsonrpsee::core::Error;
+use jsonrpsee::server::{ServerBuilder, ServerHandle};
+use crate::rpc::{RustyRpcServer as RustyRpc};
 use std::net::SocketAddr;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -12,6 +12,7 @@ use tokio_rustls::rustls::{Certificate, PrivateKey, ServerConfig};
 use tokio_rustls::TlsAcceptor;
 use std::fs::File;
 use std::io::BufReader;
+use jsonrpsee::types::error::ErrorObject;
 
 // Simple authentication token (for demonstration purposes)
 const AUTH_TOKEN: &str = "my_secret_rpc_token";
@@ -55,20 +56,6 @@ impl RateLimiter {
 }
 
 
-#[rpc(server)]
-pub trait RustyRpc {
-    #[method(name = "get_block_count")]
-    async fn get_block_count(&self) -> RpcResult<u64>;
-
-    #[method(name = "send_raw_transaction")]
-    async fn send_raw_transaction(&self, tx_hex: String) -> RpcResult<String>;
-
-    #[method(name = "authorize")]
-    async fn authorize(&self, api_key: String) -> RpcResult<bool>;
-
-    #[method(name = "send_transaction")]
-    async fn send_transaction(&self, raw_tx: String) -> RpcResult<String>;
-}
 
 pub struct RustyRpcServerImpl {
     rate_limiter: Arc<Mutex<RateLimiter>>,
@@ -80,75 +67,61 @@ impl RustyRpcServerImpl {
     }
 }
 
+impl Clone for RustyRpcServerImpl {
+    fn clone(&self) -> Self {
+        Self { rate_limiter: self.rate_limiter.clone() }
+    }
+}
 
-#[jsonrpsee::server::async_trait]
-implement RustyRpcServer for RustyRpcServerImpl {
-    async fn get_block_count(&self) -> RpcResult<u64> {
+impl RustyRpc for RustyRpcServerImpl {
+    async fn get_block_count(&self) -> Result<u64, jsonrpsee::core::Error> {
         // In a real application, you'd extract the client's IP from the context
         // For this example, we'll just use a dummy address for rate limiting.
         let dummy_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         if !self.rate_limiter.lock().unwrap().allow(dummy_addr) {
-            return Err(Error::Call(
-                jsonrpsee::types::error::CallError::Custom(
-                    jsonrpsee::types::error::CustomError::new("Rate limit exceeded").with_code(-32000),
-                ),
-            ));
+            return Err(Error::Custom("Rate limit exceeded".to_string()));
         }
         // Placeholder for actual implementation
         Ok(12345)
     }
 
-    async fn send_raw_transaction(&self, tx_hex: String) -> RpcResult<String> {
+    async fn get_block_hash(&self, height: u64) -> Result<String, jsonrpsee::core::Error> {
+        let dummy_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+        if !self.rate_limiter.lock().unwrap().allow(dummy_addr) {
+            return Err(Error::Custom("Rate limit exceeded".to_string()));
+        }
+        // Placeholder for actual implementation
+        Ok(format!("block_hash_for_height_{}", height))
+    }
+
+    async fn get_block(&self, hash: String) -> Result<String, jsonrpsee::core::Error> {
+        let dummy_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
+        if !self.rate_limiter.lock().unwrap().allow(dummy_addr) {
+            return Err(Error::Custom("Rate limit exceeded".to_string()));
+        }
+        // Placeholder for actual implementation
+        Ok(format!("block_data_for_hash_{}", hash))
+    }
+
+    async fn send_raw_transaction(&self, tx_hex: String) -> Result<String, jsonrpsee::core::Error> {
         // In a real application, you'd extract the client's IP from the context
         // For this example, we'll just use a dummy address for rate limiting.
         let dummy_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         if !self.rate_limiter.lock().unwrap().allow(dummy_addr) {
-            return Err(Error::Call(
-                jsonrpsee::types::error::CallError::Custom(
-                    jsonrpsee::types::error::CustomError::new("Rate limit exceeded").with_code(-32000),
-                ),
-            ));
+            return Err(Error::Custom("Rate limit exceeded".to_string()));
         }
         // Placeholder for actual implementation
         println!("Received raw transaction: {}", tx_hex);
-        Ok(format!("Transaction {:?} sent successfully", tx_hex))
+        Ok(format!("Transaction {} sent successfully", tx_hex))
     }
 
-    async fn authorize(&self, api_key: String) -> RpcResult<bool> {
-        // In a real application, you'd extract the client's IP from the context
-        // For this example, we'll just use a dummy address for rate limiting.
+    async fn get_transaction(&self, txid: String) -> Result<String, jsonrpsee::core::Error> {
         let dummy_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
         if !self.rate_limiter.lock().unwrap().allow(dummy_addr) {
-            return Err(Error::Call(
-                jsonrpsee::types::error::CallError::Custom(
-                    jsonrpsee::types::error::CustomError::new("Rate limit exceeded").with_code(-32000),
-                ),
-            ));
+            return Err(Error::Custom("Rate limit exceeded".to_string()));
         }
-        // Simple API key check for demonstration
-        if api_key == AUTH_TOKEN {
-            Ok(true)
-        } else {
-            Err(Error::Call(
-                jsonrpsee::types::error::CallError::Custom(
-                    jsonrpsee::types::error::CustomError::new("Unauthorized").with_code(-32001),
-                ),
-            ))
-        }
-    }
-
-    async fn send_transaction(&self, raw_tx: String) -> RpcResult<String> {
-        let dummy_addr = "127.0.0.1:0".parse::<SocketAddr>().unwrap();
-        if !self.rate_limiter.lock().unwrap().allow(dummy_addr) {
-            return Err(Error::Call(
-                jsonrpsee::types::error::CallError::Custom(
-                    jsonrpsee::types::error::CustomError::new("Rate limit exceeded").with_code(-32000),
-                ),
-            ));
-        }
-        // Placeholder: In a real implementation, this would validate and broadcast the transaction.
-        println!("Received raw transaction for broadcasting: {}", raw_tx);
-        Ok(format!("Transaction {:?} broadcasted successfully", raw_tx))
+        // Placeholder for actual implementation
+        Ok(format!("transaction_data_for_txid_{}", txid))
     }
 }
 
@@ -164,21 +137,30 @@ pub async fn run_rpc_server(http_addr: SocketAddr, ws_addr: SocketAddr) -> Resul
         .await?;
 
     let rpc_server_impl = RustyRpcServerImpl::new(rate_limiter.clone());
-    let http_handle = http_server.start(rpc_server_impl.clone().into_rpc());
+    let http_handle: ServerHandle = http_server.start(rpc_server_impl.clone().into_rpc())?;
 
     // Build and start WebSocket server
     let ws_server = ServerBuilder::default()
         .build(ws_addr)
         .await?;
 
-    let ws_handle = ws_server.start(rpc_server_impl.into_rpc());
+    let ws_handle: ServerHandle = ws_server.start(rpc_server_impl.into_rpc())?;
 
     println!("RPC servers started with basic authentication and rate limiting.");
     println!("HTTP server listening on {}", http_addr);
     println!("WebSocket server listening on {}", ws_addr);
     println!("Rate Limiting: Max {} requests per {} seconds.", MAX_REQUESTS_PER_MINUTE, RATE_LIMIT_WINDOW_SECONDS);
 
-    tokio::try_join!(http_handle.stopped(), ws_handle.stopped())?;
+    tokio::try_join!(
+        async {
+            http_handle.stopped().await;
+            Ok(())
+        }.map_err(|e: tokio::io::Error| Error::Custom(format!("HTTP server stopped with error: {}", e.to_string()))),
+        async {
+            ws_handle.stopped().await;
+            Ok(())
+        }.map_err(|e: tokio::io::Error| Error::Custom(format!("WebSocket server stopped with error: {}", e.to_string())))
+    )?;
     Ok(())
 }
 
@@ -239,21 +221,30 @@ pub async fn run_rpc_server_https(
         .await?;
 
     let rpc_server_impl = RustyRpcServerImpl::new(rate_limiter.clone());
-    let https_handle = https_server.start(rpc_server_impl.clone().into_rpc());
+    let https_handle: ServerHandle = https_server.start(rpc_server_impl.clone().into_rpc())?;
 
     // Build and start WSS server with TLS
     let wss_server = ServerBuilder::default()
         .build(wss_addr)
         .await?;
 
-    let wss_handle = wss_server.start(rpc_server_impl.into_rpc());
+    let wss_handle: ServerHandle = wss_server.start(rpc_server_impl.into_rpc())?;
 
-    println!("RPC servers started with HTTPS/WSS and authentication.");
+    println!("RPC servers started with TLS.");
     println!("HTTPS server listening on {}", https_addr);
     println!("WSS server listening on {}", wss_addr);
     println!("Rate Limiting: Max {} requests per {} seconds.", MAX_REQUESTS_PER_MINUTE, RATE_LIMIT_WINDOW_SECONDS);
     println!("TLS Certificate: {}", tls_config.cert_path);
 
-    tokio::try_join!(https_handle.stopped(), wss_handle.stopped())?;
+    tokio::try_join!(
+        async {
+            https_handle.stopped().await;
+            Ok(())
+        }.map_err(|e: tokio::io::Error| Error::Custom(format!("HTTPS server stopped with error: {}", e.to_string()))),
+        async {
+            wss_handle.stopped().await;
+            Ok(())
+        }.map_err(|e: tokio::io::Error| Error::Custom(format!("WebSocket server stopped with error: {}", e.to_string())))
+    )?;
     Ok(())
 }

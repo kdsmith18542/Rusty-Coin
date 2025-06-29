@@ -1,11 +1,11 @@
 //! FerrousShield protocol implementation for trust-minimized CoinJoin coordination.
 
-use rusty_core::masternode::{MasternodeID, FerrousShieldMixRequest, FerrousShieldMixOutput};
+use rusty_shared_types::masternode::{MasternodeID, FerrousShieldMixRequest, FerrousShieldMixOutput};
 use rusty_core::consensus::blockchain::Blockchain;
 use rusty_shared_types::{Transaction, TxInput, TxOutput, Hash};
 use rusty_shared_types::dkg::{DKGSession, DKGSessionID, DKGParticipant, ThresholdSignature, DKGParams, DKGSessionState};
 use ed25519_dalek::PublicKey;
-use rusty_core::transaction_builder::build_standard_transaction;
+// use rusty_core::transaction_builder::build_standard_transaction; // Not available, use correct builder if needed
 use rusty_crypto::dkg::DKGProtocol;
 use std::collections::{BinaryHeap, HashMap, HashSet, VecDeque};
 use blake3;

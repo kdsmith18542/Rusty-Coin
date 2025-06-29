@@ -8,6 +8,8 @@ use rusty_shared_types::{
     Hash, ConsensusParams,
     governance::{GovernanceProposal, ProposalType},
 };
+use std::fmt;
+use thiserror::Error;
 
 /// Validation errors for governance proposals
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +36,48 @@ pub enum ProposalValidationError {
     InsufficientTreasuryFunds,
     /// Proposal conflicts with existing active proposals
     ConflictingProposal,
+    /// Proposal is too large
+    TooLarge,
+    /// Proposal is missing protocol version for upgrade
+    MissingProtocolVersion,
+    /// Proposal is missing parameter details for parameter change
+    MissingParameterDetails,
+    /// Proposal is missing treasury details for treasury spend
+    MissingTreasuryDetails,
+    /// Proposal amount is invalid
+    InvalidAmount,
+    /// Proposal submission height is in the future
+    FutureSubmission,
+    /// Proposal is missing bug description for bug fix
+    MissingBugDescription,
+    /// Proposal is missing community fund details
+    MissingCommunityFundDetails,
+}
+
+impl fmt::Display for ProposalValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ProposalValidationError::InvalidProposalId => write!(f, "Invalid proposal ID or already exists"),
+            ProposalValidationError::InvalidSignature => write!(f, "Invalid proposer signature"),
+            ProposalValidationError::InvalidVotingPeriod => write!(f, "Invalid voting period"),
+            ProposalValidationError::UnsupportedProposalType => write!(f, "Unsupported proposal type"),
+            ProposalValidationError::MissingRequiredFields => write!(f, "Missing required fields for proposal type"),
+            ProposalValidationError::ProtocolViolation => write!(f, "Proposal content violates protocol rules"),
+            ProposalValidationError::InsufficientCollateral => write!(f, "Insufficient collateral provided"),
+            ProposalValidationError::InvalidContent => write!(f, "Invalid proposal title or description"),
+            ProposalValidationError::InvalidParameterChange => write!(f, "Parameter change proposal has invalid target or value"),
+            ProposalValidationError::InsufficientTreasuryFunds => write!(f, "Treasury spend proposal exceeds available funds"),
+            ProposalValidationError::ConflictingProposal => write!(f, "Proposal conflicts with existing active proposals"),
+            ProposalValidationError::TooLarge => write!(f, "Proposal is too large"),
+            ProposalValidationError::MissingProtocolVersion => write!(f, "Protocol upgrade proposal is missing protocol version"),
+            ProposalValidationError::MissingParameterDetails => write!(f, "Parameter change proposal is missing parameter details"),
+            ProposalValidationError::MissingTreasuryDetails => write!(f, "Treasury spend proposal is missing treasury details"),
+            ProposalValidationError::InvalidAmount => write!(f, "Proposal amount is invalid"),
+            ProposalValidationError::FutureSubmission => write!(f, "Proposal submission height is in the future"),
+            ProposalValidationError::MissingBugDescription => write!(f, "Bug fix proposal is missing bug description"),
+            ProposalValidationError::MissingCommunityFundDetails => write!(f, "Community fund proposal is missing details"),
+        }
+    }
 }
 
 /// Configuration for proposal validation
@@ -179,15 +223,24 @@ impl ProposalValidator {
             }
             ProposalType::TreasurySpend => {
                 // Treasury spends should have reasonable amounts
-                // This would check against actual treasury balance in a real implementation
-                if let Some(ref value_str) = proposal.new_value {
-                    if let Ok(amount) = value_str.parse::<u64>() {
-                        if amount == 0 || amount > 1_000_000_000_000 { // Max 1M RUST
-                            return Err(ProposalValidationError::InsufficientTreasuryFunds);
-                        }
-                    } else {
-                        return Err(ProposalValidationError::InvalidContent);
-                    }
+                if proposal.recipient_address.is_none() || proposal.amount.is_none() {
+                    return Err(ProposalValidationError::MissingTreasuryDetails);
+                }
+                if proposal.amount.unwrap_or(0) == 0 {
+                    return Err(ProposalValidationError::InvalidAmount);
+                }
+            }
+            ProposalType::BugFix => {
+                if proposal.bug_description.is_none() {
+                    return Err(ProposalValidationError::MissingBugDescription);
+                }
+            }
+            ProposalType::CommunityFund => {
+                if proposal.recipient_address.is_none() || proposal.amount.is_none() || proposal.project_description.is_none() {
+                    return Err(ProposalValidationError::MissingCommunityFundDetails);
+                }
+                if proposal.amount.unwrap_or(0) == 0 {
+                    return Err(ProposalValidationError::InvalidAmount);
                 }
             }
         }
@@ -271,7 +324,7 @@ impl ProposalValidator {
         // against the proposer's public key and the proposal content
         
         // For now, just check that signature is not empty
-        if _proposal.proposer_signature.is_empty() {
+        if _proposal.proposer_signature.bytes == [0u8; 64] {
             return Err(ProposalValidationError::InvalidSignature);
         }
 
@@ -314,17 +367,20 @@ impl ProposalValidator {
         // Same type and same target parameter
         if proposal1.proposal_type == proposal2.proposal_type {
             match proposal1.proposal_type {
+                ProposalType::ProtocolUpgrade => proposal1.code_change_hash == proposal2.code_change_hash,
                 ProposalType::ParameterChange => {
-                    proposal1.target_parameter == proposal2.target_parameter
-                }
-                ProposalType::ProtocolUpgrade => {
-                    // Protocol upgrades are always conflicting if overlapping
-                    true
+                    proposal1.target_parameter == proposal2.target_parameter &&
+                    proposal1.new_value == proposal2.new_value
                 }
                 ProposalType::TreasurySpend => {
-                    // Treasury spends might conflict if they exceed available funds
-                    // For simplicity, assume they don't conflict unless identical
-                    proposal1.new_value == proposal2.new_value
+                    proposal1.recipient_address == proposal2.recipient_address &&
+                    proposal1.amount == proposal2.amount
+                }
+                ProposalType::BugFix => proposal1.bug_description == proposal2.bug_description,
+                ProposalType::CommunityFund => {
+                    proposal1.recipient_address == proposal2.recipient_address &&
+                    proposal1.amount == proposal2.amount &&
+                    proposal1.project_description == proposal2.project_description
                 }
             }
         } else {

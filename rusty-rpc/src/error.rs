@@ -1,17 +1,17 @@
 use jsonrpsee::core::Error as RpcError;
-use rusty_core::error::ConsensusError;
+
 use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RpcServerError {
-    #[error("Internal server error: {0}")]
+    #[error("Internal error: {0}")]
     InternalError(String),
     #[error("Invalid request: {0}")]
     InvalidRequest(String),
-    #[error("Blockchain error: {0}")]
-    BlockchainError(#[from] ConsensusError),
     #[error("Not implemented")]
     NotImplemented,
+    #[error("Blockchain error: {0}")]
+    BlockchainError(String),
 }
 
 impl From<RpcServerError> for RpcError {

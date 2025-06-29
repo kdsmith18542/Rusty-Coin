@@ -1,6 +1,7 @@
 use ed25519_dalek::{PublicKey, Signature};
 use rusty_crypto::signature::verify_signature;
-use rusty_shared_types::{Transaction, TxInput, TxOutput, MasternodeCollateralTx, Hash, masternode::{MasternodeRegistration, MasternodeIdentity, MasternodeID, MasternodeStatus}};
+use rusty_shared_types::{Transaction, TxInput, TxOutput, Hash};
+use rusty_shared_types::masternode::{MasternodeRegistration, MasternodeIdentity, MasternodeID, MasternodeStatus, MasternodeCollateralTx};
 use rusty_core::consensus::blockchain::Blockchain;
 use rusty_core::constants::MASTERNODE_COLLATERAL_AMOUNT;
 

@@ -1,4 +1,4 @@
-use rusty_shared_types::{TxInput, TxOutput, Transaction, UtxoId, Utxo, StandardTransaction};
+use rusty_shared_types::{TxInput, TxOutput, Transaction, UtxoId, Utxo, StandardTransaction, OutPoint};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -159,10 +159,7 @@ pub fn create_coinbase_transaction(
     block_reward: u64,
 ) -> Transaction {
     let coinbase_input = TxInput {
-        previous_output: rusty_shared_types::OutPoint {
-            txid: [0u8; 32], // Null hash for coinbase
-            vout: 0xFFFFFFFF, // Special value for coinbase
-        },
+        previous_output: OutPoint { txid: [0u8; 32], vout: 0xFFFFFFFF }, // Null hash for coinbase
         script_sig: block_height.to_le_bytes().to_vec(), // Block height in script_sig
         sequence: 0xFFFFFFFF,
         witness: vec![],
