@@ -1,10 +1,10 @@
 // rusty-core/src/script/script_engine.rs
 
-use crate::script::opcode::Opcode;
 use crate::consensus::utxo_set::UtxoSet;
-use ed25519_dalek::{Signature, Verifier, PublicKey as DalekPublicKey};
+use crate::script::opcode::Opcode;
+use ed25519_dalek::{PublicKey as DalekPublicKey, Signature, Verifier};
 use ripemd::Ripemd160;
-use rusty_shared_types::{Transaction, TxOutput, OutPoint};
+use rusty_shared_types::{Transaction, TxInput, TxOutput};
 // Simple Script wrapper for now
 #[derive(Debug, Clone)]
 pub struct Script {
@@ -19,7 +19,9 @@ impl Script {
 
 impl From<&[u8]> for Script {
     fn from(bytes: &[u8]) -> Self {
-        Script { bytes: bytes.to_vec() }
+        Script {
+            bytes: bytes.to_vec(),
+        }
     }
 }
 
@@ -28,9 +30,9 @@ impl Script {
         &self.bytes
     }
 }
-use crate::constants::{MAX_SCRIPT_BYTES, MAX_OPCODE_COUNT, MAX_STACK_DEPTH, MAX_SIG_OPS};
-use sha1::{Sha1, Digest as Sha1Digest};
-use sha2::{Sha256, Digest as Sha256Digest};
+use crate::constants::{MAX_OPCODE_COUNT, MAX_SCRIPT_BYTES, MAX_SIG_OPS, MAX_STACK_DEPTH};
+use sha1::{Digest as Sha1Digest, Sha1};
+use sha2::Sha256;
 
 mod standard_scripts;
 
@@ -51,12 +53,12 @@ pub enum ScriptError {
 }
 
 pub struct ScriptEngine {
-    stack: Vec<Vec<u8>>,
+    pub stack: Vec<Vec<u8>>,
     alt_stack: Vec<Vec<u8>>,
     opcode_count: usize,
     sig_op_count: usize,
     control_stack: Vec<bool>, // Tracks whether we're in a true/false branch
-    skip_depth: usize, // Tracks nested skip levels
+    skip_depth: usize,        // Tracks nested skip levels
 }
 
 impl ScriptEngine {
@@ -71,18 +73,34 @@ impl ScriptEngine {
         }
     }
 
+    /// Get the current sig_op_count for this script execution
+    /// Per spec 04 Section 4.3.3: MAX_SIG_OPS is enforced per transaction
+    pub fn get_sig_op_count(&self) -> usize {
+        self.sig_op_count
+    }
+
+    /// Set the initial sig_op_count (for transaction-level tracking)
+    pub fn set_sig_op_count(&mut self, count: usize) {
+        self.sig_op_count = count;
+    }
+
     // Push data onto the stack
-    fn push_data(&mut self, data: Vec<u8>) {
+    pub fn push_data(&mut self, data: Vec<u8>) {
         self.stack.push(data);
     }
 
     // Pop data from the stack
-    fn pop_data(&mut self) -> Result<Vec<u8>, ScriptError> {
+    pub fn pop_data(&mut self) -> Result<Vec<u8>, ScriptError> {
         self.stack.pop().ok_or(ScriptError::StackUnderflow)
     }
 
     // Read N bytes for pushdata opcodes
-    fn read_bytes(&self, script: &[u8], ip: &mut usize, num_bytes: usize) -> Result<Vec<u8>, ScriptError> {
+    fn read_bytes(
+        &self,
+        script: &[u8],
+        ip: &mut usize,
+        num_bytes: usize,
+    ) -> Result<Vec<u8>, ScriptError> {
         if *ip + num_bytes > script.len() {
             return Err(ScriptError::ScriptTooLarge);
         }
@@ -92,7 +110,12 @@ impl ScriptEngine {
     }
 
     // Push data based on the next N bytes
-    fn push_data_n(&mut self, script: &[u8], ip: &mut usize, len_bytes: usize) -> Result<(), ScriptError> {
+    fn push_data_n(
+        &mut self,
+        script: &[u8],
+        ip: &mut usize,
+        len_bytes: usize,
+    ) -> Result<(), ScriptError> {
         let len_data = self.read_bytes(script, ip, len_bytes)?;
         let len = ScriptEngine::as_usize(&len_data)?;
         let data = self.read_bytes(script, ip, len)?;
@@ -101,7 +124,7 @@ impl ScriptEngine {
     }
 
     // Helper to check if a stack item is "false" (empty or single zero byte)
-    fn is_false(v: &[u8]) -> bool {
+    pub fn is_false(v: &[u8]) -> bool {
         v.is_empty() || (v.len() == 1 && v[0] == 0)
     }
 
@@ -119,7 +142,12 @@ impl ScriptEngine {
     }
 
     // Main verification function for a transaction
-    pub fn validate_transaction(&mut self, tx: &Transaction, utxo_set: &UtxoSet, current_block_height: u64) -> bool {
+    pub fn validate_transaction(
+        &mut self,
+        tx: &Transaction,
+        utxo_set: &UtxoSet,
+        current_block_height: u64,
+    ) -> bool {
         self.sig_op_count = 0; // Initialize sig_op_count once per transaction
         for (input_index, input) in tx.get_inputs().iter().enumerate() {
             // Skip coinbase transaction inputs
@@ -145,7 +173,17 @@ impl ScriptEngine {
             self.skip_depth = 0;
 
             let tx_hash = tx.txid();
-            if self.execute(&script, tx_hash.as_slice(), tx, current_block_height, input_index).is_err() {
+            if self
+                .execute(
+                    &script,
+                    tx_hash.as_slice(),
+                    tx,
+                    current_block_height,
+                    input_index,
+                    &prev_output.output.script_pubkey,
+                )
+                .is_err()
+            {
                 return false;
             }
 
@@ -166,19 +204,27 @@ impl ScriptEngine {
         true
     }
 
-    pub fn execute(&mut self, script: &[u8], message: &[u8], tx: &Transaction, current_block_height: u64, input_index: usize) -> Result<(), ScriptError> {
+    pub fn execute(
+        &mut self,
+        script: &[u8],
+        message: &[u8],
+        tx: &Transaction,
+        current_block_height: u64,
+        input_index: usize,
+        script_pubkey: &[u8],
+    ) -> Result<(), ScriptError> {
         // Validate script size
         if script.len() > MAX_SCRIPT_BYTES {
             return Err(ScriptError::ScriptTooLarge);
         }
-        
+
         let mut ip = 0;
         while ip < script.len() {
             // Check opcode count
             if self.opcode_count >= MAX_OPCODE_COUNT {
                 return Err(ScriptError::TooManyOpcodes);
             }
-            
+
             let opcode_byte = script[ip];
             ip += 1;
             self.opcode_count += 1;
@@ -229,20 +275,24 @@ impl ScriptEngine {
                 Opcode::OpEqual => self.op_equal()?,
                 Opcode::OpEqualverify => self.op_equal_verify()?,
                 Opcode::OpVerify => self.op_verify()?,
-                Opcode::OpCheckSig => self.op_checksig(message)?,
-                Opcode::OpCheckMultiSig => self.op_checkmultisig(tx)?,
-                Opcode::OpCheckLockTimeVerify => self.op_checklocktimeverify(tx, current_block_height)?,
-                Opcode::OpCheckSequenceVerify => self.op_checksequenceverify(tx, current_block_height, input_index)?,
+                Opcode::OpCheckSig => self.op_checksig(tx, input_index, &script_pubkey)?,
+                Opcode::OpCheckMultiSig => self.op_checkmultisig(tx, input_index, script_pubkey)?,
+                Opcode::OpCheckLockTimeVerify => {
+                    self.op_checklocktimeverify(tx, current_block_height)?
+                }
+                Opcode::OpCheckSequenceVerify => {
+                    self.op_checksequenceverify(tx, current_block_height, input_index)?
+                }
                 Opcode::OpReturn => return Err(ScriptError::OpReturn), // OP_RETURN makes the script invalid for spending
-                Opcode::OpNop => { /* Do nothing */ }, // OP_NOP is a no-operation
+                Opcode::OpNop => { /* Do nothing */ }                  // OP_NOP is a no-operation
                 Opcode::OpInvalidOpcode => return Err(ScriptError::InvalidOpcode),
                 Opcode::OpRipemd160 => self.op_ripemd160()?,
                 Opcode::OpSha1 => self.op_sha1()?,
                 Opcode::OpSha256 => self.op_sha256()?,
                 Opcode::OpHash256 => self.op_hash256()?,
                 Opcode::OpCodeSeparator => self.op_codeseparator()?,
-                Opcode::OpCheckSigVerify => self.op_checksigverify(message)?,
-                Opcode::OpCheckMultiSigVerify => self.op_checkmultisigverify(tx)?,
+                Opcode::OpCheckSigVerify => self.op_checksigverify(tx, input_index, script_pubkey)?,
+                Opcode::OpCheckMultiSigVerify => self.op_checkmultisigverify(tx, input_index, script_pubkey)?,
                 Opcode::OpIf => self.op_if()?,
                 Opcode::OpNotIf => self.op_notif()?,
                 Opcode::OpElse => self.op_else()?,
@@ -283,6 +333,7 @@ impl ScriptEngine {
         Ok(())
     }
 
+    /// Execute standard script verification (P2PKH, P2SH, etc.)
     pub fn execute_standard_script(
         &mut self,
         script_sig: &[u8],
@@ -290,28 +341,42 @@ impl ScriptEngine {
         tx: &Transaction,
         input_index: usize,
     ) -> Result<(), ScriptError> {
-        if let Ok(()) = standard_scripts::verify_p2pkh_script(
-            &Script::from(script_sig),
-            &Script::from(script_pubkey),
-            tx,
-            input_index,
-        ) {
-            return Ok(());
+        let sig_script = Script::new(script_sig.to_vec());
+        let pubkey_script = Script::new(script_pubkey.to_vec());
+
+        // Check if it's P2PKH
+        if standard_scripts::StandardScripts::is_p2pkh(&pubkey_script) {
+            return standard_scripts::verify_p2pkh_script(
+                &sig_script,
+                &pubkey_script,
+                tx,
+                input_index,
+            );
         }
 
-        // Try P2SH
-        if let Ok(()) = standard_scripts::verify_p2sh_script(
-            &Script::from(script_sig),
-            &Script::from(script_pubkey),
-            tx,
-            input_index,
-            self, // Pass self to allow recursive script execution
-        ) {
-            return Ok(());
+        // Check if it's P2SH
+        if standard_scripts::StandardScripts::is_p2sh(&pubkey_script) {
+            return standard_scripts::verify_p2sh_script(
+                &sig_script,
+                &pubkey_script,
+                tx,
+                input_index,
+                self,
+            );
         }
-        
-        // Fall back to custom script execution
-        self.execute(script_sig, script_pubkey, tx, 0, input_index)
+
+        // For non-standard scripts, fall back to regular script execution
+        let mut combined_script = script_sig.to_vec();
+        combined_script.extend_from_slice(script_pubkey);
+
+        self.stack.clear();
+        self.alt_stack.clear();
+        self.opcode_count = 0;
+        self.control_stack.clear();
+        self.skip_depth = 0;
+
+        let tx_hash = tx.txid();
+        self.execute(&combined_script, &tx_hash, tx, 0, input_index, script_pubkey)
     }
 
     // OP_DUP
@@ -323,18 +388,21 @@ impl ScriptEngine {
     }
 
     // OP_HASH160
-    fn op_hash160(&mut self) -> Result<(), ScriptError> {
+    // Per spec: Pops A. Pushes RIPEMD160(SHA256(A))
+    pub fn op_hash160(&mut self) -> Result<(), ScriptError> {
         let data = self.pop_data()?;
-        let sha256_hash = blake3::hash(&data);
+        // First apply SHA256 (per spec, not BLAKE3)
+        let sha256_hash = Sha256::digest(&data);
+        // Then apply RIPEMD160
         let mut hasher = Ripemd160::new();
-        hasher.update(sha256_hash.as_bytes());
+        hasher.update(&sha256_hash);
         let ripemd160_hash = hasher.finalize();
         self.push_data(ripemd160_hash.to_vec());
         Ok(())
     }
 
     // OP_EQUAL
-    fn op_equal(&mut self) -> Result<(), ScriptError> {
+    pub fn op_equal(&mut self) -> Result<(), ScriptError> {
         let b = self.pop_data()?;
         let a = self.pop_data()?;
         self.push_data(if a == b { vec![0x01] } else { vec![] });
@@ -348,7 +416,7 @@ impl ScriptEngine {
     }
 
     // OP_VERIFY
-    fn op_verify(&mut self) -> Result<(), ScriptError> {
+    pub fn op_verify(&mut self) -> Result<(), ScriptError> {
         let top = self.pop_data()?;
         if ScriptEngine::is_false(&top) {
             return Err(ScriptError::VerificationFailed);
@@ -357,20 +425,22 @@ impl ScriptEngine {
     }
 
     // OP_CHECKSIG
-    fn op_checksig(&mut self, message: &[u8]) -> Result<(), ScriptError> {
+    fn op_checksig(&mut self, tx: &Transaction, input_index: usize, script_pubkey: &[u8]) -> Result<(), ScriptError> {
+        // Note: MAX_SIG_OPS check is now done at transaction level, not script level
+        // This allows tracking across all inputs in a transaction
         self.sig_op_count += 1;
-        if self.sig_op_count > MAX_SIG_OPS {
-            return Err(ScriptError::TooManySigOps);
-        }
         let public_key_bytes = self.pop_data()?;
         let signature_bytes = self.pop_data()?;
 
         let public_key = DalekPublicKey::from_bytes(&public_key_bytes)
             .map_err(|_| ScriptError::VerificationFailed)?;
-        let signature = Signature::from_bytes(&signature_bytes)
-            .map_err(|_| ScriptError::VerificationFailed)?;
+        let signature =
+            Signature::from_bytes(&signature_bytes).map_err(|_| ScriptError::VerificationFailed)?;
 
-        if public_key.verify(message, &signature).is_ok() {
+        // Calculate proper sighash for this input
+        let sighash = self.calculate_sighash(tx, input_index, script_pubkey)?;
+
+        if public_key.verify(&sighash, &signature).is_ok() {
             self.push_data(vec![0x01]);
         } else {
             self.push_data(vec![]);
@@ -378,38 +448,146 @@ impl ScriptEngine {
         Ok(())
     }
 
-    // OP_CHECKMULTISIG
-    fn op_checkmultisig(&mut self, tx: &Transaction) -> Result<(), ScriptError> {
-        self.sig_op_count += 1;
-        if self.sig_op_count > MAX_SIG_OPS {
-            return Err(ScriptError::TooManySigOps);
-        }
-        let num_signatures = self.pop_data()?[0] as usize;
-        if num_signatures > self.stack.len() {
-            return Err(ScriptError::StackUnderflow);
-        }
-        let mut signatures = Vec::with_capacity(num_signatures);
-        for _ in 0..num_signatures {
-            signatures.push(self.pop_data()?);
+    /// Calculate sighash for a transaction input
+    /// Per spec: Signature is over transaction hash excluding script_sig and substituting script_pubkey
+    /// This implements BIP143-style sighash with BLAKE3 hashing
+    fn calculate_sighash(
+        &self,
+        tx: &Transaction,
+        input_index: usize,
+        script_pubkey: &[u8],
+    ) -> Result<[u8; 32], ScriptError> {
+        let inputs = tx.get_inputs();
+        if input_index >= inputs.len() {
+            return Err(ScriptError::VerificationFailed);
         }
 
+        // Create a copy of inputs for sighash calculation
+        // For the input being signed, use the script_pubkey instead of script_sig
+        // For other inputs, use empty script_sig
+        let mut sighash_inputs = Vec::new();
+        for (i, input) in inputs.iter().enumerate() {
+            if i == input_index {
+                // For the input being signed, substitute script_pubkey for script_sig
+                sighash_inputs.push(TxInput::from_outpoint(
+                    input.previous_output.clone(),
+                    script_pubkey.to_vec(), // Use script_pubkey instead of script_sig
+                    input.sequence,
+                    input.witness.clone(),
+                ));
+            } else {
+                // For other inputs, use empty script_sig
+                sighash_inputs.push(TxInput::from_outpoint(
+                    input.previous_output.clone(),
+                    Vec::new(), // Empty script_sig
+                    input.sequence,
+                    input.witness.clone(),
+                ));
+            }
+        }
+
+        // Create temporary transaction for sighash calculation
+        let sighash_tx = match tx {
+            Transaction::Standard {
+                version,
+                outputs,
+                lock_time,
+                fee: _,
+                witness: _,
+                ..
+            } => Transaction::Standard {
+                version: *version,
+                inputs: sighash_inputs,
+                outputs: outputs.clone(),
+                lock_time: *lock_time,
+                fee: 0,              // Fee not included in sighash
+                witness: Vec::new(), // Witness not included in sighash
+            },
+            Transaction::Coinbase {
+                version,
+                outputs,
+                lock_time,
+                witness: _,
+                ..
+            } => Transaction::Coinbase {
+                version: *version,
+                inputs: sighash_inputs,
+                outputs: outputs.clone(),
+                lock_time: *lock_time,
+                witness: Vec::new(),
+            },
+            _ => {
+                // For other transaction types, use Standard format for sighash
+                Transaction::Standard {
+                    version: 1,
+                    inputs: sighash_inputs,
+                    outputs: tx.get_outputs().to_vec(),
+                    lock_time: 0,
+                    fee: 0,
+                    witness: Vec::new(),
+                }
+            }
+        };
+
+        // For BIP143-style sighash, we need to include sighash type
+        // SIGHASH_ALL = 0x01
+        let sighash_type = 0x01u32;
+
+        // Serialize transaction + sighash_type and hash with BLAKE3
+        let mut sighash_data = bincode::serialize(&sighash_tx)
+            .map_err(|_| ScriptError::VerificationFailed)?;
+        sighash_data.extend_from_slice(&sighash_type.to_le_bytes());
+
+        Ok(blake3::hash(&sighash_data).into())
+    }
+
+    // OP_CHECKMULTISIG
+    // Per spec: Pops N (number of public keys), then N PublicKeys (from P_N to P_1).
+    // Pops M (number of signatures), then M Signatures (from S_M to S_1).
+    // Pops a dummy element (historical bug, ignored).
+    // Verifies that M signatures match M of N public keys. Pushes TRUE/FALSE.
+    pub fn op_checkmultisig(&mut self, tx: &Transaction, input_index: usize, script_pubkey: &[u8]) -> Result<(), ScriptError> {
+        // Note: MAX_SIG_OPS check is now done at transaction level, not script level
+        // This allows tracking across all inputs in a transaction
+        self.sig_op_count += 1;
+
+        // Pop N (number of public keys)
         let num_public_keys = self.pop_data()?[0] as usize;
         if num_public_keys > self.stack.len() {
             return Err(ScriptError::StackUnderflow);
         }
+
+        // Pop N public keys (from P_N to P_1)
         let mut public_keys = Vec::with_capacity(num_public_keys);
         for _ in 0..num_public_keys {
             public_keys.push(self.pop_data()?);
         }
 
-        // The message to be signed is the transaction hash.
-        let message = tx.txid();
+        // Pop M (number of signatures)
+        let num_signatures = self.pop_data()?[0] as usize;
+        if num_signatures > self.stack.len() {
+            return Err(ScriptError::StackUnderflow);
+        }
+
+        // Pop M signatures (from S_M to S_1)
+        let mut signatures = Vec::with_capacity(num_signatures);
+        for _ in 0..num_signatures {
+            signatures.push(self.pop_data()?);
+        }
+
+        // Pop dummy element (historical Bitcoin bug compatibility, per spec)
+        let _dummy = self.pop_data()?;
+
+        // Calculate proper sighash for this input
+        let message = self.calculate_sighash(tx, input_index, script_pubkey)?;
 
         let mut verified_signatures = 0;
         for signature_bytes in signatures.iter() {
             for public_key_bytes in public_keys.iter() {
-                let signature = Signature::from_bytes(signature_bytes.as_slice()).map_err(|_| ScriptError::VerificationFailed)?;
-                let public_key = DalekPublicKey::from_bytes(public_key_bytes.as_slice()).map_err(|_| ScriptError::VerificationFailed)?;
+                let signature = Signature::from_bytes(signature_bytes.as_slice())
+                    .map_err(|_| ScriptError::VerificationFailed)?;
+                let public_key = DalekPublicKey::from_bytes(public_key_bytes.as_slice())
+                    .map_err(|_| ScriptError::VerificationFailed)?;
 
                 if Verifier::verify(&public_key, message.as_slice(), &signature).is_ok() {
                     verified_signatures += 1;
@@ -427,81 +605,140 @@ impl ScriptEngine {
     }
 
     // OP_CHECKLOCKTIMEVERIFY
-    fn op_checklocktimeverify(&mut self, tx: &Transaction, current_block_height: u64) -> Result<(), ScriptError> {
+    // Per spec 04 Section 4.3.4: Pops LockTime. Fails script if the transaction's lock_time
+    // (from Transaction header) is not met (i.e., current block height or timestamp is less than LockTime).
+    fn op_checklocktimeverify(
+        &mut self,
+        tx: &Transaction,
+        current_block_height: u64,
+    ) -> Result<(), ScriptError> {
         // Pop the locktime value from the stack
         let lock_time_bytes = self.pop_data()?;
         let lock_time = ScriptEngine::as_u32(&lock_time_bytes)?;
 
-        // The transaction's lock_time must be less than or equal to the block's lock_time
-        // If the transaction's lock_time is greater than the block's lock_time, validation fails.
-        // If the lock_time value is interpreted as a block height, compare with current_block_height.
-        // If interpreted as a timestamp, compare with current block's timestamp (not available here directly, using height as proxy).
-        // Also, check if all input sequence numbers are MAX_SEQUENCE.
-
+        // Get the transaction's lock_time
         let tx_lock_time = tx.get_lock_time();
 
-        if tx_lock_time < lock_time {
-            return Err(ScriptError::VerificationFailed); // Locktime not met
-        }
-        
-        // If locktime is interpreted as block height, check against current block height
-        if lock_time < crate::constants::LOCKTIME_THRESHOLD && current_block_height < lock_time as u64 {
+        // Per spec: Fail if transaction's lock_time is not set (must be non-zero for OP_CHECKLOCKTIMEVERIFY)
+        if tx_lock_time == 0 {
             return Err(ScriptError::VerificationFailed);
         }
 
-        // If locktime is interpreted as timestamp, check against current block timestamp
-        // (Simplified to height for now)
-        if lock_time >= crate::constants::LOCKTIME_THRESHOLD && current_block_height < lock_time as u64 {
+        // Per spec: Fail if lock_time from stack is greater than transaction's lock_time
+        // This ensures the script's lock_time requirement is met by the transaction
+        if lock_time > tx_lock_time {
             return Err(ScriptError::VerificationFailed);
         }
 
-        // Rule: all TxInput sequence values in the transaction MUST NOT be equal to MAX_SEQUENCE if lock_time is set
-        // Since we removed the sequence field from TxInput, we'll skip this check
-        // In a real implementation, sequence validation would be handled elsewhere
+        // Interpret lock_time based on LOCKTIME_THRESHOLD
+        // If lock_time < LOCKTIME_THRESHOLD: interpreted as block height
+        // If lock_time >= LOCKTIME_THRESHOLD: interpreted as Unix timestamp
+        use crate::constants::LOCKTIME_THRESHOLD;
 
-        self.push_data(vec![0x01]); // True if locktime conditions met
+        if lock_time < LOCKTIME_THRESHOLD {
+            // Block height interpretation
+            // Fail if current block height is less than required lock_time
+            if current_block_height < lock_time as u64 {
+                return Err(ScriptError::VerificationFailed);
+            }
+        } else {
+            // Timestamp interpretation
+            // Estimate current timestamp from block height (approximate: 60 seconds per block)
+            // In full implementation, this would use actual block timestamp
+            let estimated_timestamp = current_block_height * 60;
+            if estimated_timestamp < lock_time as u64 {
+                return Err(ScriptError::VerificationFailed);
+            }
+        }
+
+        // Note: Per Bitcoin/BIP65, all input sequence numbers must NOT be MAX_SEQUENCE if lock_time is set
+        // This check is handled at transaction validation level, not script level
+        // The script opcode only validates that the lock_time condition is met
+
+        // If we reach here, locktime conditions are met - script continues
+        // Note: OP_CHECKLOCKTIMEVERIFY doesn't push anything to stack, it just verifies
         Ok(())
     }
 
-    // OP_CHECKSEQUENCEVERIFY
-    fn op_checksequenceverify(&mut self, tx: &Transaction, _current_block_height: u64, input_index: usize) -> Result<(), ScriptError> {
-        // Pop the relative sequence value from the stack
+    // OP_CHECKSEQUENCEVERIFY - Per docs/specs/04_ferrisscript_spec.md Section 4.3.4
+    // Pops Sequence. Fails script if the transaction input's sequence (from TxInput) does not meet
+    // Sequence (relative lock time) or if LockTime bit is set.
+    fn op_checksequenceverify(
+        &mut self,
+        tx: &Transaction,
+        current_block_height: u64,
+        input_index: usize,
+    ) -> Result<(), ScriptError> {
+        // Pop the relative sequence value from the stack per FerrisScript spec
         let relative_sequence_bytes = self.pop_data()?;
         let relative_sequence = ScriptEngine::as_u32(&relative_sequence_bytes)?;
 
-        // Since we removed the sequence field from TxInput, we'll use a default value
-        // In a real implementation, sequence would be stored elsewhere or handled differently
-        let tx_input_sequence = 0xFFFFFFFF; // Default sequence value
-
-        // Check flags in relative_sequence
-        let locktime_is_seconds = (relative_sequence & (1 << 22)) != 0;
-        let sequence_is_relative = (relative_sequence & (1 << 31)) != 0;
-
-        if !sequence_is_relative {
-            // Relative sequence must have the relative flag set
+        // Get the input being validated - transaction inputs have sequence field per spec
+        let tx_inputs = tx.get_inputs();
+        if input_index >= tx_inputs.len() {
             return Err(ScriptError::VerificationFailed);
         }
 
-        let masked_sequence = relative_sequence & 0x0000FFFF; // Only lower 16 bits are used for relative locktime
+        // Get the actual sequence number from the transaction input
+        let tx_input_sequence = tx_inputs[input_index].sequence;
 
+        // Per BIP112/BIP68: Check if the disable flag (bit 31) is set in the input sequence
+        // If bit 31 is set, relative locktime is disabled and the check passes
+        if (tx_input_sequence & (1 << 31)) != 0 {
+            // Relative locktime is disabled for this input - check passes
+            // Note: OP_CHECKSEQUENCEVERIFY doesn't push anything to stack, it just verifies
+            return Ok(());
+        }
+
+        // Extract flags from the relative_sequence value (from stack)
+        // Bit 22: type flag (0 = blocks, 1 = seconds)
+        // Bit 31: disable flag (must be 0 for relative locktime to be enabled)
+        let locktime_is_seconds = (relative_sequence & (1 << 22)) != 0;
+        let sequence_is_relative = (relative_sequence & (1 << 31)) == 0;
+
+        if !sequence_is_relative {
+            // If relative locktime is disabled in the script's sequence value, the check passes
+            return Ok(());
+        }
+
+        // Extract the relative locktime value (lower 16 bits)
+        let masked_sequence = relative_sequence & 0x0000FFFF;
+        let masked_input_sequence = tx_input_sequence & 0x0000FFFF;
+
+        // Compare the input's sequence with the required sequence
+        // The input's sequence must be >= the required sequence for the check to pass
+        if masked_input_sequence < masked_sequence {
+            return Err(ScriptError::VerificationFailed);
+        }
+
+        // If locktime_is_seconds flag is set, interpret as seconds (relative time)
+        // Otherwise, interpret as blocks (relative height)
         if locktime_is_seconds {
             // Relative locktime in seconds
-            // Compare with block.header.timestamp, not current_block_height
-            // For now, we use block.header.height as a proxy for time
-            if tx_input_sequence < masked_sequence {
-                self.push_data(vec![]); // False
-            } else {
-                self.push_data(vec![0x01]); // True
+            // Estimate current timestamp from block height (approximate: 60 seconds per block)
+            // In full implementation, this would use actual block timestamp
+            let current_time = current_block_height * 60;
+
+            // The input's sequence represents seconds since the input was created
+            // For simplicity, we compare against the masked sequence value
+            // In a full implementation, we would track when the input was created
+            // and compare against actual elapsed time
+            if masked_input_sequence < masked_sequence {
+                return Err(ScriptError::VerificationFailed);
             }
         } else {
             // Relative locktime in blocks
-            if tx_input_sequence < masked_sequence {
-                self.push_data(vec![]); // False
-            } else {
-                self.push_data(vec![0x01]); // True
+            // The input's sequence represents blocks since the input was created
+            // For simplicity, we compare against the masked sequence value
+            // In a full implementation, we would track the block height when the input was created
+            // and compare against actual elapsed blocks
+            if masked_input_sequence < masked_sequence {
+                return Err(ScriptError::VerificationFailed);
             }
         }
 
+        // If we reach here, sequence conditions are met - script continues
+        // Note: OP_CHECKSEQUENCEVERIFY doesn't push anything to stack, it just verifies
         Ok(())
     }
 
@@ -565,14 +802,14 @@ impl ScriptEngine {
     }
 
     // OP_CHECKSIGVERIFY
-    fn op_checksigverify(&mut self, message: &[u8]) -> Result<(), ScriptError> {
-        self.op_checksig(message)?;
+    fn op_checksigverify(&mut self, tx: &Transaction, input_index: usize, script_pubkey: &[u8]) -> Result<(), ScriptError> {
+        self.op_checksig(tx, input_index, script_pubkey)?;
         self.op_verify()
     }
 
     // OP_CHECKMULTISIGVERIFY
-    fn op_checkmultisigverify(&mut self, tx: &Transaction) -> Result<(), ScriptError> {
-        self.op_checkmultisig(tx)?;
+    fn op_checkmultisigverify(&mut self, tx: &Transaction, input_index: usize, script_pubkey: &[u8]) -> Result<(), ScriptError> {
+        self.op_checkmultisig(tx, input_index, script_pubkey)?;
         self.op_verify()
     }
 
@@ -582,22 +819,83 @@ impl ScriptEngine {
         script_pubkey: &[u8],
         tx: &Transaction,
         input_index: usize,
-        _utxo_output: &TxOutput,  // Currently unused, but kept for future use
+        _utxo_output: &TxOutput, // Currently unused, but kept for future use
     ) -> Result<(), ScriptError> {
+        // Per spec 04 Section 4.3.3: MAX_SCRIPT_BYTES applies to script_sig and script_pubkey separately
+        if script_sig.len() > MAX_SCRIPT_BYTES {
+            return Err(ScriptError::ScriptTooLarge);
+        }
+        if script_pubkey.len() > MAX_SCRIPT_BYTES {
+            return Err(ScriptError::ScriptTooLarge);
+        }
+
         let mut script_engine = ScriptEngine::new();
 
         // Create a dummy message (in a real scenario, this would be the sighash)
         let message = vec![0; 32]; // Example dummy message
 
         // Execute scriptSig
-        script_engine.execute(script_sig, &message, tx, 0, input_index)?;
+        script_engine.execute(script_sig, &message, tx, 0, input_index, script_pubkey)?;
 
         // Execute scriptPubKey
-        script_engine.execute(script_pubkey, &message, tx, 0, input_index)?;
+        script_engine.execute(script_pubkey, &message, tx, 0, input_index, script_pubkey)?;
 
         // Final stack check (result should be true and stack should be empty)
         let result = script_engine.pop_data()?;
         if ScriptEngine::is_false(&result) || !script_engine.stack.is_empty() {
+            return Err(ScriptError::VerificationFailed);
+        }
+
+        Ok(())
+    }
+
+    // Main validation function for a TxInput with transaction-level sig_op_count tracking
+    pub fn verify_script_with_sig_op_count(
+        &mut self,
+        script_sig: &[u8],
+        script_pubkey: &[u8],
+        tx: &Transaction,
+        input_index: usize,
+        _utxo_output: &TxOutput,
+        transaction_sig_op_count: &mut usize,
+    ) -> Result<(), ScriptError> {
+        // Per spec 04 Section 4.3.3: MAX_SCRIPT_BYTES applies to script_sig and script_pubkey separately
+        if script_sig.len() > MAX_SCRIPT_BYTES {
+            return Err(ScriptError::ScriptTooLarge);
+        }
+        if script_pubkey.len() > MAX_SCRIPT_BYTES {
+            return Err(ScriptError::ScriptTooLarge);
+        }
+
+        // Reset engine state for this script execution (except sig_op_count)
+        self.stack.clear();
+        self.alt_stack.clear();
+        self.opcode_count = 0;
+        // Initialize sig_op_count with the transaction-level count
+        self.set_sig_op_count(*transaction_sig_op_count);
+        self.control_stack.clear();
+        self.skip_depth = 0;
+
+        // Create a dummy message (in a real scenario, this would be the sighash)
+        let message = vec![0; 32]; // Example dummy message
+
+        // Execute scriptSig
+        self.execute(script_sig, &message, tx, 0, input_index, script_pubkey)?;
+
+        // Execute scriptPubKey
+        self.execute(script_pubkey, &message, tx, 0, input_index, script_pubkey)?;
+
+        // Update transaction-level sig_op_count
+        *transaction_sig_op_count = self.get_sig_op_count();
+
+        // Per spec 04 Section 4.3.3: MAX_SIG_OPS is enforced per transaction
+        if *transaction_sig_op_count > MAX_SIG_OPS {
+            return Err(ScriptError::TooManySigOps);
+        }
+
+        // Final stack check (result should be true and stack should be empty)
+        let result = self.pop_data()?;
+        if ScriptEngine::is_false(&result) || !self.stack.is_empty() {
             return Err(ScriptError::VerificationFailed);
         }
 
@@ -671,7 +969,9 @@ impl ScriptEngine {
             return Ok(());
         }
 
-        self.control_stack.pop().ok_or(ScriptError::InvalidStackState)?;
+        self.control_stack
+            .pop()
+            .ok_or(ScriptError::InvalidStackState)?;
         Ok(())
     }
 
@@ -861,12 +1161,12 @@ impl ScriptEngine {
         let size = ScriptEngine::as_usize(&self.pop_data()?)?;
         let offset = ScriptEngine::as_usize(&self.pop_data()?)?;
         let data = self.pop_data()?;
-        
+
         if offset + size > data.len() {
             return Err(ScriptError::InvalidStackState);
         }
-        
-        self.push_data(data[offset..offset+size].to_vec());
+
+        self.push_data(data[offset..offset + size].to_vec());
         Ok(())
     }
 
@@ -874,11 +1174,11 @@ impl ScriptEngine {
     fn op_left(&mut self) -> Result<(), ScriptError> {
         let size = ScriptEngine::as_usize(&self.pop_data()?)?;
         let data = self.pop_data()?;
-        
+
         if size > data.len() {
             return Err(ScriptError::InvalidStackState);
         }
-        
+
         self.push_data(data[..size].to_vec());
         Ok(())
     }
@@ -887,12 +1187,12 @@ impl ScriptEngine {
     fn op_right(&mut self) -> Result<(), ScriptError> {
         let size = ScriptEngine::as_usize(&self.pop_data()?)?;
         let data = self.pop_data()?;
-        
+
         if size > data.len() {
             return Err(ScriptError::InvalidStackState);
         }
-        
-        self.push_data(data[data.len()-size..].to_vec());
+
+        self.push_data(data[data.len() - size..].to_vec());
         Ok(())
     }
 
@@ -917,11 +1217,11 @@ impl ScriptEngine {
     fn op_and(&mut self) -> Result<(), ScriptError> {
         let b = self.pop_data()?;
         let a = self.pop_data()?;
-        
+
         if a.len() != b.len() {
             return Err(ScriptError::InvalidStackState);
         }
-        
+
         let result = a.iter().zip(b.iter()).map(|(x, y)| x & y).collect();
         self.push_data(result);
         Ok(())
@@ -931,11 +1231,11 @@ impl ScriptEngine {
     fn op_or(&mut self) -> Result<(), ScriptError> {
         let b = self.pop_data()?;
         let a = self.pop_data()?;
-        
+
         if a.len() != b.len() {
             return Err(ScriptError::InvalidStackState);
         }
-        
+
         let result = a.iter().zip(b.iter()).map(|(x, y)| x | y).collect();
         self.push_data(result);
         Ok(())
@@ -945,13 +1245,32 @@ impl ScriptEngine {
     fn op_xor(&mut self) -> Result<(), ScriptError> {
         let b = self.pop_data()?;
         let a = self.pop_data()?;
-        
+
         if a.len() != b.len() {
             return Err(ScriptError::InvalidStackState);
         }
-        
+
         let result = a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect();
         self.push_data(result);
         Ok(())
+    }
+}
+
+pub use rusty_shared_types::script_engine::{
+    ScriptEngine as ScriptEngineTrait, ScriptError as SharedScriptError,
+};
+
+impl ScriptEngineTrait for ScriptEngine {
+    fn verify_script(
+        &mut self,
+        script_sig: &[u8],
+        script_pubkey: &[u8],
+        tx: &rusty_shared_types::Transaction,
+        input_index: usize,
+        utxo_output: &rusty_shared_types::TxOutput,
+    ) -> Result<(), SharedScriptError> {
+        // Call the static method, but adapt to trait interface
+        ScriptEngine::verify_script(script_sig, script_pubkey, tx, input_index, utxo_output)
+            .map_err(|e| SharedScriptError::ExecutionError(format!("{:?}", e)))
     }
 }

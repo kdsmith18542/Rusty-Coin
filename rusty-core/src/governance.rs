@@ -1,12 +1,20 @@
+use rusty_shared_types::masternode::{MasternodeID, MasternodeList};
+use rusty_shared_types::{Hash, OutPoint, PublicKey};
 use serde::{Deserialize, Serialize};
-use rusty_shared_types::{Hash, PublicKey, OutPoint};
 use std::collections::HashMap;
-use rusty_shared_types::masternode::{MasternodeList, MasternodeID};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GovernanceState {
     pub active_proposals: HashMap<Hash, GovernanceProposalState>,
     // Add other fields as needed, e.g., treasury balance, past proposals
+}
+
+impl GovernanceState {
+    pub fn new() -> Self {
+        Self {
+            active_proposals: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,15 +74,24 @@ impl<'a> Governance<'a> {
             abstain_votes: 0,
             total_votes: 0,
         };
-        self.state.active_proposals.insert(proposal.hash, proposal_state);
+        self.state
+            .active_proposals
+            .insert(proposal.hash, proposal_state);
         Ok(())
     }
 
-    pub fn process_vote(&mut self, vote: GovernanceVote, current_block_height: u64) -> Result<(), String> {
+    pub fn process_vote(
+        &mut self,
+        vote: GovernanceVote,
+        current_block_height: u64,
+    ) -> Result<(), String> {
         // Validate vote
         // Check if the voter is an active masternode
         let voter_mn_id: PublicKey = vote.voter;
-        let mn_id = MasternodeID(OutPoint { txid: voter_mn_id, vout: 0 }); // Assuming vout 0 for MasternodeID from PublicKey
+        let mn_id = MasternodeID(OutPoint {
+            txid: voter_mn_id,
+            vout: 0,
+        }); // Assuming vout 0 for MasternodeID from PublicKey
         if self.masternode_list.get_masternode(&mn_id).is_none() {
             return Err("Voter is not a registered masternode".to_string());
         }
@@ -84,7 +101,10 @@ impl<'a> Governance<'a> {
         // Update votes for the corresponding proposal
         if let Some(proposal_state) = self.state.active_proposals.get_mut(&vote.proposal_hash) {
             // Check if the proposal is active and within its voting period
-            if !proposal_state.is_active || current_block_height < proposal_state.proposal.start_block || current_block_height > proposal_state.proposal.end_block {
+            if !proposal_state.is_active
+                || current_block_height < proposal_state.proposal.start_block
+                || current_block_height > proposal_state.proposal.end_block
+            {
                 return Err("Proposal is not active or not within voting period".to_string());
             }
             // Fix: match on VoteType
@@ -104,7 +124,9 @@ impl<'a> Governance<'a> {
     pub fn evaluate_proposals(&mut self, _current_block_height: u64) {
         let mut proposals_to_evaluate = Vec::new();
         for (proposal_hash, proposal_state) in self.state.active_proposals.iter() {
-            if proposal_state.is_active /*&& current_block_height >= proposal_state.proposal.end_block*/ {
+            if proposal_state.is_active
+            /*&& current_block_height >= proposal_state.proposal.end_block*/
+            {
                 proposals_to_evaluate.push(*proposal_hash);
             }
         }
@@ -130,7 +152,7 @@ impl<'a> Governance<'a> {
         let state = self.state.active_proposals.get(proposal_hash).unwrap();
         let total_voting_power = self.masternode_list.total_voting_power(); // Use the new method
         let approved_power = state.yes_votes;
-        
+
         (approved_power as f64 / total_voting_power as f64) >= Self::GOVERNANCE_QUORUM
     }
 }
@@ -179,10 +201,7 @@ impl GovernanceSystem {
         }
     }
 
-    pub fn submit_proposal(
-        &mut self,
-        proposal: GovernanceProposal,
-    ) -> Result<(), String> {
+    pub fn submit_proposal(&mut self, proposal: GovernanceProposal) -> Result<(), String> {
         // In a real system, you'd verify the signature against the proposer's public key
         // and potentially check for a collateral deposit.
         if self.proposals.contains_key(&proposal.hash) {
@@ -192,20 +211,14 @@ impl GovernanceSystem {
         Ok(())
     }
 
-    pub fn cast_vote(
-        &mut self,
-        vote: GovernanceVote,
-    ) -> Result<(), String> {
+    pub fn cast_vote(&mut self, vote: GovernanceVote) -> Result<(), String> {
         // Verify the vote's signature
         // Check if the proposal exists and is in a voting state
         // Check if the voter is eligible (e.g., a masternode owner, ticket holder)
         if !self.proposals.contains_key(&vote.proposal_hash) {
             return Err("Proposal not found".to_string());
         }
-        self.votes
-            .entry(vote.proposal_hash)
-            .or_default()
-            .push(vote);
+        self.votes.entry(vote.proposal_hash).or_default().push(vote);
         Ok(())
     }
 

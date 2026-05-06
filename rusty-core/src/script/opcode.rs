@@ -51,14 +51,14 @@ pub enum Opcode {
     Op2Over = 0x70,
     Op2Rot = 0x71,
     Op2Swap = 0x72,
-    
+
     // String operations
     OpCat = 0x7E,
     OpSubStr = 0x7F,
     OpLeft = 0x80,
     OpRight = 0x81,
     OpSize = 0x82,
-    
+
     // Bitwise logic
     OpInvert = 0x83,
     OpAnd = 0x84,
@@ -66,7 +66,7 @@ pub enum Opcode {
     OpXor = 0x86,
     OpEqual = 0x87,
     OpEqualverify = 0x88,
-    
+
     // Arithmetic
     Op1Add = 0x8B,
     Op1Sub = 0x8C,
@@ -95,7 +95,7 @@ pub enum Opcode {
     OpMin = 0xA3,
     OpMax = 0xA4,
     OpWithin = 0xA5,
-    
+
     // Cryptography
     OpRipemd160 = 0xA6,
     OpSha1 = 0xA7,
@@ -107,14 +107,44 @@ pub enum Opcode {
     OpCheckSigVerify = 0xAD,
     OpCheckMultiSig = 0xAE,
     OpCheckMultiSigVerify = 0xAF,
-    
+
     // Locktime
     OpCheckLockTimeVerify = 0xB1,
     OpCheckSequenceVerify = 0xB2,
-    
+
     // Pseudo-words (for internal use)
     OpInvalidOpcode = 0xFF,
 }
+
+// Uppercase aliases required for spec compliance checks
+pub const OP_0: Opcode = Opcode::Op0;
+pub const OP_PUSHDATA1: Opcode = Opcode::OpPushdata1;
+pub const OP_PUSHDATA2: Opcode = Opcode::OpPushdata2;
+pub const OP_PUSHDATA4: Opcode = Opcode::OpPushdata4;
+pub const OP_1: Opcode = Opcode::Op1;
+pub const OP_2: Opcode = Opcode::Op2;
+pub const OP_3: Opcode = Opcode::Op3;
+pub const OP_4: Opcode = Opcode::Op4;
+pub const OP_5: Opcode = Opcode::Op5;
+pub const OP_6: Opcode = Opcode::Op6;
+pub const OP_7: Opcode = Opcode::Op7;
+pub const OP_8: Opcode = Opcode::Op8;
+pub const OP_9: Opcode = Opcode::Op9;
+pub const OP_10: Opcode = Opcode::Op10;
+pub const OP_11: Opcode = Opcode::Op11;
+pub const OP_12: Opcode = Opcode::Op12;
+pub const OP_13: Opcode = Opcode::Op13;
+pub const OP_14: Opcode = Opcode::Op14;
+pub const OP_15: Opcode = Opcode::Op15;
+pub const OP_16: Opcode = Opcode::Op16;
+pub const OP_DUP: Opcode = Opcode::OpDup;
+pub const OP_HASH160: Opcode = Opcode::OpHash160;
+pub const OP_EQUAL: Opcode = Opcode::OpEqual;
+pub const OP_EQUALVERIFY: Opcode = Opcode::OpEqualverify;
+pub const OP_CHECKSIG: Opcode = Opcode::OpCheckSig;
+pub const OP_CHECKMULTISIG: Opcode = Opcode::OpCheckMultiSig;
+pub const OP_VERIFY: Opcode = Opcode::OpVerify;
+pub const OP_RETURN: Opcode = Opcode::OpReturn;
 
 impl From<u8> for Opcode {
     fn from(byte: u8) -> Self {
@@ -140,7 +170,7 @@ impl From<u8> for Opcode {
             0x5E => Opcode::Op14,
             0x5F => Opcode::Op15,
             0x60 => Opcode::Op16,
-            
+
             // Flow control
             0x61 => Opcode::OpNop,
             0x63 => Opcode::OpIf,
@@ -168,14 +198,14 @@ impl From<u8> for Opcode {
             0x70 => Opcode::Op2Over,
             0x71 => Opcode::Op2Rot,
             0x72 => Opcode::Op2Swap,
-            
+
             // String operations
             0x7E => Opcode::OpCat,
             0x7F => Opcode::OpSubStr,
             0x80 => Opcode::OpLeft,
             0x81 => Opcode::OpRight,
             0x82 => Opcode::OpSize,
-            
+
             // Bitwise logic
             0x83 => Opcode::OpInvert,
             0x84 => Opcode::OpAnd,
@@ -183,7 +213,7 @@ impl From<u8> for Opcode {
             0x86 => Opcode::OpXor,
             0x87 => Opcode::OpEqual,
             0x88 => Opcode::OpEqualverify,
-            
+
             // Arithmetic
             0x8B => Opcode::Op1Add,
             0x8C => Opcode::Op1Sub,
@@ -212,7 +242,7 @@ impl From<u8> for Opcode {
             0xA3 => Opcode::OpMin,
             0xA4 => Opcode::OpMax,
             0xA5 => Opcode::OpWithin,
-            
+
             // Cryptography
             0xA6 => Opcode::OpRipemd160,
             0xA7 => Opcode::OpSha1,
@@ -224,11 +254,11 @@ impl From<u8> for Opcode {
             0xAD => Opcode::OpCheckSigVerify,
             0xAE => Opcode::OpCheckMultiSig,
             0xAF => Opcode::OpCheckMultiSigVerify,
-            
+
             // Locktime
             0xB1 => Opcode::OpCheckLockTimeVerify,
             0xB2 => Opcode::OpCheckSequenceVerify,
-            
+
             _ => Opcode::OpInvalidOpcode,
         }
     }

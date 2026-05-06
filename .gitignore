@@ -72,3 +72,29 @@ test-results/
 
 # Local configuration overrides
 .local-*
+
+# AI and Tooling
+.claude/
+.qodo/
+.gemini/
+
+# Session and Progress Reports
+COMPLETION_STATUS_REPORT.md
+REMEDIATION_PLAN.md
+REMEDIATION_PROGRESS_SUMMARY.md
+SESSION_PROGRESS.md
+STUB_ANALYSIS.md
+FERRISSCRIPT_FIXES.md
+plan.md
+
+# Temporary and Build Metadata
+temp/
+logs/
+reports/
+cargo_metadata.json
+rctb.txt
+base64ct_dependency.txt
+cargo_why_build_depends_base64ct.txt
+Cargo.toml.patch
+*.backup
+*.rs.backup

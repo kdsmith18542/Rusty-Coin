@@ -1,7 +1,8 @@
 //! Core types for the Rusty Coin blockchain
 
+use rusty_types::{block::Block, transaction::Transaction};
+use rusty_shared_types::{BlockHeader, Hash};
 use serde::{Deserialize, Serialize};
-use rusty_shared_types::{Block, BlockHeader, Transaction, Hash};
 
 // Re-export submodules
 pub mod block;
@@ -29,7 +30,10 @@ pub enum P2PMessage {
     /// Request for block transactions
     GetBlockTxs(GetBlockTxs),
     /// Response with block transactions
-    BlockTransactions { block_hash: Hash, transactions: Vec<Transaction> },
+    BlockTransactions {
+        block_hash: Hash,
+        transactions: Vec<Transaction>,
+    },
 }
 
 /// Request for block data
@@ -111,5 +115,8 @@ pub enum RustyCoinEvent {
     /// A peer disconnected from the network
     PeerDisconnected { peer_id: PeerId },
     /// Sync progress update
-    SyncProgress { current_height: u64, target_height: u64 },
+    SyncProgress {
+        current_height: u64,
+        target_height: u64,
+    },
 }

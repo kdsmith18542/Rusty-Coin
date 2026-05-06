@@ -1,10 +1,10 @@
 //! Hashing algorithms for Rusty Coin.
 
-use blake3::Hasher as Blake3Hasher;
 use blake3::Hash as Blake3Hash;
+use blake3::Hasher as Blake3Hasher;
 use sha2::Digest;
-use std::convert::TryInto;
 use std::boxed::Box;
+use std::convert::TryInto;
 
 /// Size of the OxideHash scratchpad in bytes (1 GiB).
 const SCRATCHPAD_SIZE: usize = 1024 * 1024 * 1024; // 1 GiB
@@ -38,10 +38,9 @@ impl OxideHasher {
     /// A 32-byte BLAKE3 hash.
     pub fn calculate_oxide_hash(&mut self, header_bytes: &[u8], nonce: u64) -> Blake3Hash {
         // 1. Serialization & Initial Seed
-        let initial_seed = Blake3Hasher::new()
-            .update(header_bytes)
-            .update(&nonce.to_le_bytes())
-            .finalize();
+        // According to OxideHash spec, the initial seed is computed from header_bytes only
+        // The nonce is excluded from the initial seed calculation
+        let initial_seed = Blake3Hasher::new().update(header_bytes).finalize();
 
         // 2. Scratchpad Initialization
         for i in (0..SCRATCHPAD_SIZE).step_by(32) {
@@ -96,10 +95,12 @@ impl OxideHasher {
         }
 
         // 4. Final Hash Computation
+        // Include the nonce in the final hash computation as per spec
         let final_hash = Blake3Hasher::new()
             .update(&self.scratchpad[0..32])
             .update(current_state_hash.as_bytes())
             .update(&self.scratchpad[32..SCRATCHPAD_SIZE])
+            .update(&nonce.to_le_bytes()) // Include nonce in final hash
             .finalize();
 
         final_hash
@@ -203,8 +204,8 @@ impl MerkleTree {
 
 #[cfg(test)]
 mod tests {
-    use hex_literal::hex;
     use super::calculate_sha256;
+    use hex_literal::hex;
 
     #[test]
     fn test_calculate_sha256() {
@@ -226,7 +227,10 @@ mod tests {
         let hash = calculate_sha256(b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.");
         assert_eq!(
             hash,
-            [9, 168, 226, 207, 178, 12, 86, 148, 198, 184, 255, 50, 200, 137, 194, 123, 146, 104, 137, 254, 217, 21, 171, 69, 103, 149, 125, 18, 140, 33, 98, 66]
+            [
+                9, 168, 226, 207, 178, 12, 86, 148, 198, 184, 255, 50, 200, 137, 194, 123, 146,
+                104, 137, 254, 217, 21, 171, 69, 103, 149, 125, 18, 140, 33, 98, 66
+            ]
         );
     }
 }

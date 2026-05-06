@@ -3,17 +3,24 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use ed25519_dalek::{Signature, Verifier, SignatureError, PublicKey as VerifyingKey};
-use rusty_shared_types::{BlockHeader, Ticket, TicketId, OutPoint, PublicKey, Hash};
-use rusty_shared_types::masternode::MasternodeList;
 use crate::consensus::error::ConsensusError;
+use ed25519_dalek::{PublicKey as VerifyingKey, Signature, SignatureError, Verifier};
+use rusty_shared_types::masternode::MasternodeList;
+use rusty_shared_types::{
+    Block, BlockHeader, Hash, OutPoint, PublicKey, Ticket, TicketId, Transaction,
+};
 
-pub fn validate_ticket_signature(public_key_bytes: &[u8], message: &[u8], signature_bytes: &[u8]) -> Result<bool, SignatureError> {
-    let public_key = VerifyingKey::from_bytes(public_key_bytes).map_err(|_| SignatureError::new())?;
+pub fn validate_ticket_signature(
+    public_key_bytes: &[u8],
+    message: &[u8],
+    signature_bytes: &[u8],
+) -> Result<bool, SignatureError> {
+    let public_key =
+        VerifyingKey::from_bytes(public_key_bytes).map_err(|_| SignatureError::new())?;
     let signature = Signature::from_bytes(signature_bytes).map_err(|_| SignatureError::new())?;
     match public_key.verify(message, &signature) {
         Ok(_) => Ok(true),
-        Err(_) => Ok(false)
+        Err(_) => Ok(false),
     }
 }
 
@@ -42,11 +49,19 @@ impl LiveTicketsPool {
     }
 
     pub fn remove_ticket(&mut self, ticket_id: &TicketId) -> Result<Ticket, ConsensusError> {
-        self.tickets.remove(ticket_id).ok_or(ConsensusError::InvalidTicket("Ticket not found in live pool.".to_string()))
+        self.tickets
+            .remove(ticket_id)
+            .ok_or(ConsensusError::InvalidTicket(
+                "Ticket not found in live pool.".to_string(),
+            ))
     }
 
     pub fn get_ticket(&self, ticket_id: &TicketId) -> Option<&Ticket> {
         self.tickets.get(ticket_id)
+    }
+
+    pub fn get_ticket_by_pubkey(&self, pubkey: &[u8]) -> Option<&Ticket> {
+        self.tickets.values().find(|ticket| ticket.pubkey == pubkey)
     }
 
     pub fn get_live_ticket_count(&self) -> usize {
@@ -61,53 +76,115 @@ impl LiveTicketsPool {
         self.tickets.values()
     }
 
-    pub fn update_for_new_block(&mut self, block: &rusty_shared_types::Block, used_ticket_ids: &Vec<TicketId>) -> Result<(), ConsensusError> {
+    pub fn update_for_new_block(
+        &mut self,
+        block: &rusty_shared_types::Block,
+        used_ticket_ids: &Vec<TicketId>,
+    ) -> Result<(), ConsensusError> {
         for ticket_id in used_ticket_ids {
             self.tickets.remove(ticket_id);
         }
 
         for tx in &block.transactions {
-            if let rusty_shared_types::Transaction::TicketPurchase { version: _, inputs: _, outputs, ticket_id: _tx_ticket_hash, locked_amount: _locked_amount, lock_time: _, fee: _, ticket_address, witness: _ } = tx {
+            if let rusty_shared_types::Transaction::TicketPurchase {
+                version: _,
+                inputs: _,
+                outputs,
+                ticket_id: _tx_ticket_hash,
+                locked_amount: _locked_amount,
+                lock_time: _,
+                fee: _,
+                ticket_address,
+                witness: _,
+            } = tx
+            {
                 // Assuming the first output of a TicketPurchase transaction is the ticket output
                 // and the value of this output is the locked_amount.
-                let _ticket_output = outputs.get(0).ok_or(ConsensusError::InvalidTicket("Ticket purchase transaction has no output for ticket.".to_string()))?;
-                let _outpoint = OutPoint { txid: tx.txid(), vout: 0 }; // Assuming vout 0 for the ticket output
+                let _ticket_output = outputs.get(0).ok_or(ConsensusError::InvalidTicket(
+                    "Ticket purchase transaction has no output for ticket.".to_string(),
+                ))?;
+                let _outpoint = OutPoint {
+                    txid: tx.txid(),
+                    vout: 0,
+                }; // Assuming vout 0 for the ticket output
 
                 // Convert Vec<u8> ticket_address to PublicKey ([u8; 32])
-                let public_key: PublicKey = ticket_address.as_slice().try_into()
-                    .map_err(|_| ConsensusError::InvalidTicket("Invalid public key length in ticket address.".to_string()))?;
+                let public_key: PublicKey = ticket_address.as_slice().try_into().map_err(|_| {
+                    ConsensusError::InvalidTicket(
+                        "Invalid public key length in ticket address.".to_string(),
+                    )
+                })?;
 
                 // Commitment can be a hash of the public key or other relevant ticket data
                 let commitment: Hash = blake3::hash(&public_key).into();
 
                 let ticket = Ticket {
-                    id: TicketId::from_bytes(commitment),  // Using commitment as the ID
+                    id: TicketId::from_bytes(commitment), // Using commitment as the ID
                     pubkey: public_key.to_vec(),          // Convert PublicKey to Vec<u8>
-                    height: block.header.height,         // Purchase block height
-                    value: outputs.get(0).ok_or(
-                        ConsensusError::InvalidTicket("Ticket purchase transaction has no output value.".to_string())
-                    )?.value,
-                    status: rusty_shared_types::TicketStatus::Live,  // New tickets are Live by default
+                    height: block.header.height,          // Purchase block height
+                    value: outputs
+                        .get(0)
+                        .ok_or(ConsensusError::InvalidTicket(
+                            "Ticket purchase transaction has no output value.".to_string(),
+                        ))?
+                        .value,
+                    // Per spec 03 Section 3.2.2: Tickets start as PENDING
+                    // They transition to LIVE when block reaches POS_FINALITY_DEPTH
+                    status: rusty_shared_types::TicketStatus::Pending,
                 };
-                self.add_ticket(ticket).expect("Failed to add ticket from purchase transaction");
+                self.add_ticket(ticket)
+                    .expect("Failed to add ticket from purchase transaction");
             }
         }
+
+        // Process ticket finality transitions (PENDING -> LIVE)
+        // Per spec 03 Section 3.2.2: Tickets transition to LIVE when block reaches POS_FINALITY_DEPTH
+        self.process_ticket_finality(block.header.height);
+
         Ok(())
     }
 
-    pub fn update_for_revert_block(&mut self, block: &rusty_shared_types::Block, used_ticket_ids: &Vec<TicketId>) {
-        // Add back the used tickets
-        for ticket_id in used_ticket_ids {
-            self.tickets.remove(ticket_id);
-        }
+    /// Process ticket finality transitions
+    /// Per spec 03 Section 3.2.2: Tickets transition from PENDING to LIVE when
+    /// the block containing their purchase transaction reaches POS_FINALITY_DEPTH
+    /// (e.g., 1 block after inclusion)
+    pub fn process_ticket_finality(&mut self, current_height: u64) {
+        use crate::constants::POS_FINALITY_DEPTH;
 
+        for (_ticket_id, ticket) in self.tickets.iter_mut() {
+            if ticket.status == rusty_shared_types::TicketStatus::Pending {
+                // Check if ticket has reached finality depth
+                // Ticket was purchased at ticket.height, so it becomes LIVE at ticket.height + POS_FINALITY_DEPTH
+                if current_height >= ticket.height + POS_FINALITY_DEPTH {
+                    ticket.status = rusty_shared_types::TicketStatus::Live;
+                }
+            }
+        }
+    }
+
+    pub fn update_for_revert_block(
+        &mut self,
+        block: &rusty_shared_types::Block,
+        used_ticket_ids: &Vec<TicketId>,
+    ) {
+        // For block reversion, we need to:
+        // 1. Add back tickets that were redeemed (spent) in the reverted block
+        // 2. Remove tickets that were purchased in the reverted block
+
+        // Note: Adding back redeemed tickets requires historical ticket data reconstruction
+        // which is not currently implemented. For now, we only handle removing purchased tickets.
+
+        // Remove tickets that were purchased in this block (they should no longer exist)
         for tx in &block.transactions {
             if let rusty_shared_types::Transaction::TicketPurchase { ticket_id, .. } = tx {
-                // The ticket_id from the transaction is already the TicketId (Hash)
                 let ticket_id = TicketId(*ticket_id);
                 self.tickets.remove(&ticket_id);
             }
         }
+
+        // TODO: Implement adding back redeemed tickets by reconstructing from historical data
+        // The used_ticket_ids represent tickets that were redeemed in this block and need to be restored
+        // This requires storing ticket data during redemption or having access to historical state
     }
 
     pub fn get_ticket_ids_sorted(&self) -> Vec<TicketId> {
@@ -116,16 +193,34 @@ impl LiveTicketsPool {
         ticket_ids
     }
 
-    pub fn validate_non_participation_proof(&self, proof: &rusty_shared_types::masternode::MasternodeNonParticipationProof, masternode_list: &MasternodeList) -> Result<(), ConsensusError> {
-        if masternode_list.get_masternode(&proof.masternode_id).is_none() {
-            return Err(ConsensusError::MasternodeError("Masternode not found for non-participation proof.".to_string()));
+    pub fn validate_non_participation_proof(
+        &self,
+        proof: &rusty_shared_types::masternode::MasternodeNonParticipationProof,
+        masternode_list: &MasternodeList,
+    ) -> Result<(), ConsensusError> {
+        if masternode_list
+            .get_masternode(&proof.masternode_id)
+            .is_none()
+        {
+            return Err(ConsensusError::MasternodeError(
+                "Masternode not found for non-participation proof.".to_string(),
+            ));
         }
         Ok(())
     }
 
-    pub fn validate_malicious_proof(&self, proof: &rusty_shared_types::masternode::MasternodeMaliciousProof, masternode_list: &MasternodeList) -> Result<(), ConsensusError> {
-        if masternode_list.get_masternode(&proof.masternode_id).is_none() {
-            return Err(ConsensusError::MasternodeError("Masternode not found for malicious proof.".to_string()));
+    pub fn validate_malicious_proof(
+        &self,
+        proof: &rusty_shared_types::masternode::MasternodeMaliciousProof,
+        masternode_list: &MasternodeList,
+    ) -> Result<(), ConsensusError> {
+        if masternode_list
+            .get_masternode(&proof.masternode_id)
+            .is_none()
+        {
+            return Err(ConsensusError::MasternodeError(
+                "Masternode not found for malicious proof.".to_string(),
+            ));
         }
         Ok(())
     }
@@ -169,31 +264,38 @@ pub fn calculate_new_ticket_price(
 // 3.4 Voter Selection Parameters (Example values)
 const VOTERS_PER_BLOCK: usize = 5;
 
-    pub fn select_voters(
-        prev_block_hash: &[u8; 32],
-        live_tickets_pool: &LiveTicketsPool,
-    ) -> Vec<TicketId> {
-        let mut selected_voters: Vec<(u64, TicketId)> = Vec::new();
+pub fn select_voters(
+    prev_block_hash: &[u8; 32],
+    live_tickets_pool: &LiveTicketsPool,
+) -> Vec<TicketId> {
+    let mut selected_voters: Vec<(u64, TicketId)> = Vec::new();
 
-        for (ticket_id, _ticket) in &live_tickets_pool.tickets {
-            let mut hasher = blake3::Hasher::new();
-            hasher.update(prev_block_hash);
-            hasher.update(&bincode::serialize(ticket_id).unwrap());
-            let lottery_score_bytes: [u8; 32] = hasher.finalize().into();
-            let lottery_score = u64::from_le_bytes(lottery_score_bytes[0..8].try_into().unwrap());
-            selected_voters.push((lottery_score, ticket_id.clone()));
+    // Per spec 03 Section 3.4: Only LIVE tickets are eligible for voter selection
+    // PENDING tickets are not eligible until they reach POS_FINALITY_DEPTH
+    for (ticket_id, ticket) in &live_tickets_pool.tickets {
+        // Only consider LIVE tickets for voter selection
+        if ticket.status != rusty_shared_types::TicketStatus::Live {
+            continue;
         }
 
-        // Sort by lottery score, then by TicketId for tie-breaking
-        selected_voters.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.as_ref().cmp(b.1.as_ref())));
-
-        selected_voters
-            .into_iter()
-            .rev()
-            .take(VOTERS_PER_BLOCK)
-            .map(|(_, id)| id)
-            .collect()
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(prev_block_hash);
+        hasher.update(&bincode::serialize(ticket_id).unwrap());
+        let lottery_score_bytes: [u8; 32] = hasher.finalize().into();
+        let lottery_score = u64::from_le_bytes(lottery_score_bytes[0..8].try_into().unwrap());
+        selected_voters.push((lottery_score, ticket_id.clone()));
     }
+
+    // Sort by lottery score, then by TicketId for tie-breaking
+    selected_voters.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.as_ref().cmp(b.1.as_ref())));
+
+    selected_voters
+        .into_iter()
+        .rev()
+        .take(VOTERS_PER_BLOCK)
+        .map(|(_, id)| id)
+        .collect()
+}
 
 // 3.5 Block Validation Parameters (Example values)
 const MIN_VALID_VOTES_REQUIRED: usize = 3;

@@ -51,7 +51,7 @@ pub enum ConsensusError {
     StateRootNotFound(u64),
     #[error("Invalid proof of work")]
     InvalidProofOfWork,
-    
+
     // Governance errors
     #[error("Proposal with ID {} already exists", format_hash(.0))]
     ProposalAlreadyExists(rusty_shared_types::Hash),
@@ -71,8 +71,20 @@ pub enum ConsensusError {
     InvalidLockTime(String),
     #[error("Invalid ticket: {0}")]
     InvalidTicket(String),
+    #[error("Invalid ticket ID")]
+    InvalidTicketID,
+    #[error("Invalid ticket status")]
+    InvalidTicketStatus,
+    #[error("Invalid vote type")]
+    InvalidVoteType,
     #[error("Duplicate ticket vote: {0}")]
     DuplicateTicketVote(String),
+    #[error(
+        "Duplicate governance vote from voter {} on proposal {}",
+        format_hash(.1),
+        format_hash(.0)
+    )]
+    DuplicateGovernanceVote(rusty_shared_types::Hash, rusty_shared_types::Hash),
     #[error("Immature ticket: {0}")]
     ImmatureTicket(String),
     #[error("Expired ticket: {0}")]
@@ -83,12 +95,18 @@ pub enum ConsensusError {
     FailedToFindHistoricalUTXO(rusty_shared_types::OutPoint),
     #[error("Invalid signature: {0}")]
     InvalidSignature(String),
+    #[error("No ticket votes provided")]
+    NoTicketVotes,
     #[error("Invalid ticket vote: {0}")]
     InvalidTicketVote(String),
+    #[error("Insufficient ticket votes for quorum")]
+    InsufficientTicketVotes,
     #[error("Invalid PoSe response: {0}")]
     InvalidPoSeResponse(String),
     #[error("PoSe challenge expired: {0}")]
     PoSeChallengeExpired(String),
+    #[error("Network error: {0}")]
+    NetworkError(String),
 }
 
 // Implement conversions from other error types

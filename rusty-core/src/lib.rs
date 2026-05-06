@@ -28,32 +28,26 @@
 //! }
 //! ```
 
-pub mod consensus;
-pub mod network;
-pub mod mempool;
-pub mod constants;
-pub mod script;
 pub mod audit_log;
-pub mod types;
+pub mod consensus;
+pub mod constants;
 pub mod governance;
-pub mod sidechain;
-pub mod transaction_builder;
-pub mod state;
 pub mod light_client;
-
-
-
-
-
-
-
-
-
-
+pub mod mempool;
+pub mod network;
+pub mod protocol_constants;
+pub mod script;
+pub mod sidechain;
+pub mod state;
+pub mod transaction_builder;
+pub mod types;
+pub mod validation;
 
 // Placeholder for core functionalities
 use crate::consensus::blockchain::Blockchain;
+use crate::network::P2PNetwork;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Initializes the core blockchain functionalities.
 ///
@@ -63,6 +57,7 @@ use std::path::Path;
 /// # Arguments
 ///
 /// * `data_dir` - A reference to the `Path` where blockchain data should be stored or loaded from.
+/// * `p2p_network` - The P2P network interface for peer communication.
 ///
 /// # Returns
 ///
@@ -79,13 +74,16 @@ use std::path::Path;
 ///
 /// fn main() -> Result<(), Box<dyn std::error::Error>> {
 ///     let data_dir = Path::new("./my_blockchain_data");
-///     let _blockchain = rusty_core::init(data_dir)?;
+///     // let p2p_network = ...; // Initialize P2P network
+///     // let _blockchain = rusty_core::init(data_dir, p2p_network)?;
 ///     println!("Blockchain initialized successfully!");
 ///     Ok(())
 /// }
 /// ```
-pub fn init(_data_dir: &Path) -> Result<Blockchain, Box<dyn std::error::Error>> {
-    let blockchain = Blockchain::new()
-        .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+pub fn init(
+    _data_dir: &Path,
+    p2p_network: Arc<std::sync::Mutex<dyn P2PNetwork + Send + Sync>>,
+) -> Result<Blockchain, Box<dyn std::error::Error>> {
+    let blockchain = Blockchain::new(p2p_network).map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
     Ok(blockchain)
 }

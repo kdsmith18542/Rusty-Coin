@@ -1,16 +1,15 @@
 //! Fast sync implementation using state snapshots
-//! 
+//!
 //! This module provides fast synchronization capabilities for new nodes
 //! by downloading and verifying state snapshots instead of processing
 //! the entire blockchain history.
 
-use std::time::{Duration, Instant};
+use log::{debug, info};
 use std::collections::HashMap;
-use log::{info, debug};
+use std::time::{Duration, Instant};
 
-use rusty_shared_types::BlockHeader;
 use crate::consensus::error::ConsensusError;
-use crate::state::{SnapshotManager, StateSnapshot, SnapshotConfig, SnapshotMetadata};
+use crate::state::{SnapshotConfig, SnapshotMetadata};
 
 /// Configuration for fast sync
 #[derive(Debug, Clone)]
@@ -79,7 +78,6 @@ pub struct PeerSnapshot {
 /// Fast sync manager
 pub struct FastSyncManager {
     config: FastSyncConfig,
-    snapshot_manager: SnapshotManager,
     status: FastSyncStatus,
     /// Available snapshots from peers
     peer_snapshots: std::collections::HashMap<String, Vec<PeerSnapshot>>,
@@ -91,12 +89,12 @@ pub struct FastSyncManager {
 
 impl FastSyncManager {
     /// Create a new fast sync manager
-    pub fn new(config: FastSyncConfig, snapshot_config: SnapshotConfig) -> Result<Self, ConsensusError> {
-        let snapshot_manager = SnapshotManager::new(snapshot_config)?;
-        
+    pub fn new(
+        config: FastSyncConfig,
+        _snapshot_config: SnapshotConfig,
+    ) -> Result<Self, ConsensusError> {
         Ok(Self {
             config,
-            snapshot_manager,
             status: FastSyncStatus::NotStarted,
             peer_snapshots: HashMap::new(),
             sync_start_time: None,
@@ -107,7 +105,7 @@ impl FastSyncManager {
     /// Start fast sync process
     pub async fn start_fast_sync(&mut self, current_height: u64) -> Result<(), ConsensusError> {
         info!("Starting fast sync from height {}", current_height);
-        
+
         self.status = FastSyncStatus::DiscoveringSnapshots;
         self.sync_start_time = Some(Instant::now());
 
@@ -118,7 +116,10 @@ impl FastSyncManager {
         let target_snapshot = self.select_best_snapshot(current_height)?;
         self.target_snapshot = Some(target_snapshot.clone());
 
-        info!("Selected snapshot at height {} for fast sync", target_snapshot.block_height);
+        info!(
+            "Selected snapshot at height {} for fast sync",
+            target_snapshot.block_height
+        );
 
         // Download and verify the snapshot
         self.download_snapshot(&target_snapshot).await?;
@@ -130,7 +131,7 @@ impl FastSyncManager {
         self.sync_remaining_blocks().await?;
 
         self.status = FastSyncStatus::Completed;
-        
+
         if let Some(start_time) = self.sync_start_time {
             let duration = start_time.elapsed();
             info!("Fast sync completed in {:?}", duration);
@@ -142,7 +143,7 @@ impl FastSyncManager {
     /// Check if fast sync is beneficial for the given height difference
     pub fn should_use_fast_sync(&self, current_height: u64, network_height: u64) -> bool {
         let height_diff = network_height.saturating_sub(current_height);
-        
+
         // Use fast sync if we're significantly behind
         height_diff > 1000 && self.has_suitable_snapshots(network_height)
     }
@@ -154,11 +155,14 @@ impl FastSyncManager {
 
     /// Get fast sync statistics
     pub fn get_stats(&self) -> FastSyncStats {
-        let available_snapshots = self.peer_snapshots.values()
+        let available_snapshots = self
+            .peer_snapshots
+            .values()
             .map(|snapshots| snapshots.len())
             .sum();
 
-        let sync_duration = self.sync_start_time
+        let sync_duration = self
+            .sync_start_time
             .map(|start| start.elapsed())
             .unwrap_or_default();
 
@@ -172,7 +176,12 @@ impl FastSyncManager {
     }
 
     /// Add snapshot information from a peer
-    pub fn add_peer_snapshot(&mut self, peer_id: String, metadata: SnapshotMetadata, peer_height: u64) {
+    pub fn add_peer_snapshot(
+        &mut self,
+        peer_id: String,
+        metadata: SnapshotMetadata,
+        peer_height: u64,
+    ) {
         let peer_snapshot = PeerSnapshot {
             peer_id: peer_id.clone(),
             metadata,
@@ -196,72 +205,92 @@ impl FastSyncManager {
     async fn discover_snapshots(&mut self) -> Result<(), ConsensusError> {
         // In a real implementation, this would query connected peers for available snapshots
         // For now, we'll simulate having some snapshots available
-        
-        debug!("Discovering snapshots from {} peers", self.peer_snapshots.len());
-        
+
+        debug!(
+            "Discovering snapshots from {} peers",
+            self.peer_snapshots.len()
+        );
+
         if self.peer_snapshots.is_empty() {
-            return Err(ConsensusError::StateError("No peers available for snapshot discovery".to_string()));
+            // In regtest or single-node mode, allow startup without error
+            info!("No peers available for snapshot discovery; skipping fast sync (likely regtest or single-node mode)");
+            return Ok(());
         }
 
         Ok(())
     }
 
-    fn select_best_snapshot(&self, current_height: u64) -> Result<SnapshotMetadata, ConsensusError> {
+    fn select_best_snapshot(
+        &self,
+        current_height: u64,
+    ) -> Result<SnapshotMetadata, ConsensusError> {
         let mut candidates = Vec::new();
 
         // Collect all snapshots that are suitable for fast sync
         for peer_snapshots in self.peer_snapshots.values() {
             for peer_snapshot in peer_snapshots {
                 let snapshot_height = peer_snapshot.metadata.block_height;
-                
+
                 // Check if snapshot is suitable
-                if snapshot_height > current_height + self.config.min_snapshot_age &&
-                   !peer_snapshot.metadata.is_incremental {
+                if snapshot_height > current_height + self.config.min_snapshot_age
+                    && !peer_snapshot.metadata.is_incremental
+                {
                     candidates.push(peer_snapshot);
                 }
             }
         }
 
         if candidates.is_empty() {
-            return Err(ConsensusError::StateError("No suitable snapshots found".to_string()));
+            return Err(ConsensusError::StateError(
+                "No suitable snapshots found".to_string(),
+            ));
         }
 
         // Sort by height (descending) and trust score
         candidates.sort_by(|a, b| {
-            b.metadata.block_height.cmp(&a.metadata.block_height)
-                .then_with(|| b.trust_score.partial_cmp(&a.trust_score).unwrap_or(std::cmp::Ordering::Equal))
+            b.metadata
+                .block_height
+                .cmp(&a.metadata.block_height)
+                .then_with(|| {
+                    b.trust_score
+                        .partial_cmp(&a.trust_score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
         });
 
         // Select the best candidate
         let best_snapshot = candidates[0];
-        
+
         // Verify we have enough peers offering this snapshot
-        let peer_count = candidates.iter()
+        let peer_count = candidates
+            .iter()
             .filter(|s| s.metadata.block_height == best_snapshot.metadata.block_height)
             .count();
 
         if peer_count < self.config.min_peers {
             return Err(ConsensusError::StateError(format!(
-                "Not enough peers ({}) offering snapshot at height {}", 
-                peer_count, 
-                best_snapshot.metadata.block_height
+                "Not enough peers ({}) offering snapshot at height {}",
+                peer_count, best_snapshot.metadata.block_height
             )));
         }
 
         Ok(best_snapshot.metadata.clone())
     }
 
-    async fn download_snapshot(&mut self, metadata: &SnapshotMetadata) -> Result<(), ConsensusError> {
+    async fn download_snapshot(
+        &mut self,
+        metadata: &SnapshotMetadata,
+    ) -> Result<(), ConsensusError> {
         info!("Downloading snapshot at height {}", metadata.block_height);
-        
+
         self.status = FastSyncStatus::DownloadingSnapshot { progress: 0 };
 
         // In a real implementation, this would download the snapshot data from peers
         // For now, we'll simulate the download process
-        
+
         for progress in (0..=100).step_by(10) {
             self.status = FastSyncStatus::DownloadingSnapshot { progress };
-            
+
             // Simulate download time
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -292,7 +321,7 @@ impl FastSyncManager {
 
     async fn apply_snapshot(&mut self, _metadata: &SnapshotMetadata) -> Result<(), ConsensusError> {
         info!("Applying snapshot to local state");
-        
+
         self.status = FastSyncStatus::ApplyingSnapshot;
 
         // In a real implementation, this would:
@@ -311,21 +340,21 @@ impl FastSyncManager {
     async fn sync_remaining_blocks(&mut self) -> Result<(), ConsensusError> {
         // In a real implementation, this would sync any blocks that came after the snapshot
         // For now, we'll just mark it as complete
-        
+
         self.status = FastSyncStatus::SyncingBlocks { remaining: 0 };
-        
+
         info!("No remaining blocks to sync");
         Ok(())
     }
 
     fn has_suitable_snapshots(&self, network_height: u64) -> bool {
-        self.peer_snapshots.values()
-            .any(|snapshots| {
-                snapshots.iter().any(|s| {
-                    s.metadata.block_height > network_height.saturating_sub(self.config.min_snapshot_age) &&
-                    !s.metadata.is_incremental
-                })
+        self.peer_snapshots.values().any(|snapshots| {
+            snapshots.iter().any(|s| {
+                s.metadata.block_height
+                    > network_height.saturating_sub(self.config.min_snapshot_age)
+                    && !s.metadata.is_incremental
             })
+        })
     }
 }
 
@@ -356,7 +385,7 @@ impl FastSyncCoordinator {
         enabled: bool,
     ) -> Result<Self, ConsensusError> {
         let fast_sync_manager = FastSyncManager::new(fast_sync_config, snapshot_config)?;
-        
+
         Ok(Self {
             fast_sync_manager,
             enabled,
@@ -375,19 +404,26 @@ impl FastSyncCoordinator {
         }
 
         let height_diff = network_height.saturating_sub(current_height);
-        
+
         if height_diff < self.min_height_diff {
             return Ok(false);
         }
 
-        if !self.fast_sync_manager.should_use_fast_sync(current_height, network_height) {
+        if !self
+            .fast_sync_manager
+            .should_use_fast_sync(current_height, network_height)
+        {
             return Ok(false);
         }
 
-        info!("Starting fast sync: current={}, network={}, diff={}", 
-              current_height, network_height, height_diff);
+        info!(
+            "Starting fast sync: current={}, network={}, diff={}",
+            current_height, network_height, height_diff
+        );
 
-        self.fast_sync_manager.start_fast_sync(current_height).await?;
+        self.fast_sync_manager
+            .start_fast_sync(current_height)
+            .await?;
         Ok(true)
     }
 
@@ -407,8 +443,14 @@ impl FastSyncCoordinator {
     }
 
     /// Add snapshot information from a peer
-    pub fn add_peer_snapshot(&mut self, peer_id: String, metadata: SnapshotMetadata, peer_height: u64) {
-        self.fast_sync_manager.add_peer_snapshot(peer_id, metadata, peer_height);
+    pub fn add_peer_snapshot(
+        &mut self,
+        peer_id: String,
+        metadata: SnapshotMetadata,
+        peer_height: u64,
+    ) {
+        self.fast_sync_manager
+            .add_peer_snapshot(peer_id, metadata, peer_height);
     }
 
     /// Remove snapshots from a disconnected peer

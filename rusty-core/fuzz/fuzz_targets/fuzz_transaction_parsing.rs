@@ -55,15 +55,20 @@ impl From<FuzzTransaction> for Transaction {
 
 impl From<FuzzTxInput> for TxInput {
     fn from(fuzz_input: FuzzTxInput) -> Self {
-        TxInput {
-            previous_output: OutPoint {
+        TxInput::from_outpoint(
+
+            OutPoint {
                 txid: fuzz_input.previous_output_txid,
                 vout: fuzz_input.previous_output_vout,
             },
-            script_sig: fuzz_input.script_sig,
-            sequence: fuzz_input.sequence,
-            witness: vec![fuzz_input.witness],
-        }
+
+            fuzz_input.script_sig,
+
+            fuzz_input.sequence,
+
+            vec![fuzz_input.witness],
+
+        )
     }
 }
 
@@ -263,8 +268,8 @@ fn test_transaction_validation_edge_cases(data: &[u8]) {
     
     // Test transaction with only inputs
     if data.len() >= 68 {
-        let input = TxInput {
-            previous_output: OutPoint {
+        let input = TxInput::from_outpoint(
+     OutPoint {
                 txid: {
                     let mut txid = [0u8; 32];
                     txid.copy_from_slice(&data[8..40]);
@@ -272,10 +277,10 @@ fn test_transaction_validation_edge_cases(data: &[u8]) {
                 },
                 vout: u32::from_le_bytes([data[40], data[41], data[42], data[43]]),
             },
-            script_sig: data[44..68].to_vec(),
-            sequence: u32::from_le_bytes([data[64], data[65], data[66], data[67]]),
-            witness: vec![],
-        };
+     data[44..68].to_vec(),
+     u32::from_le_bytes([data[64], data[65], data[66], data[67]]),
+     vec![],
+ );
         
         let input_only_tx = Transaction::Standard(StandardTransaction { version: 1, inputs: vec![], outputs: vec![], lock_time: 0, fee: 0, witness: vec![] });
         
@@ -384,15 +389,15 @@ fn test_script_parsing(data: &[u8]) {
             let script = data[..script_size].to_vec();
             
             // Test script in input
-            let input = TxInput {
-                previous_output: OutPoint {
+            let input = TxInput::from_outpoint(
+     OutPoint {
                     txid: [0u8; 32],
                     vout: 0,
                 },
-                script_sig: script.clone(),
-                sequence: 0,
-                witness: vec![],
-            };
+     script.clone(),
+     0,
+     vec![],
+ );
             
             // Test script in output
             let output = TxOutput {
@@ -428,15 +433,15 @@ fn test_script_parsing(data: &[u8]) {
         }
         let tx = Transaction::Standard(StandardTransaction {
             version: 1,
-            inputs: vec![TxInput {
-                previous_output: OutPoint {
+            inputs: vec![TxInput::from_outpoint(
+    OutPoint {
                     txid: [0u8; 32],
                     vout: 0,
                 },
-                script_sig: script.clone(),
-                sequence: 0,
-                witness: vec![],
-            }],
+    script.clone(),
+    0,
+    vec![],
+)],
             outputs: vec![TxOutput {
                 value: 1000000,
                 script_pubkey: script,

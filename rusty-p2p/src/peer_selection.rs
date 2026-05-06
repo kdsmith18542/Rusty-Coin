@@ -1,16 +1,16 @@
 //! Advanced peer selection algorithms for optimal P2P network performance
-//! 
+//!
 //! This module implements sophisticated peer selection strategies that go beyond
 //! basic random selection to optimize network performance, security, and resilience.
 
+use libp2p::PeerId;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::IpAddr;
 use std::time::{Duration, Instant};
-use libp2p::PeerId;
-use serde::{Serialize, Deserialize};
 
 /// Comprehensive peer scoring system
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct PeerScore {
     /// Base reputation score (-100 to 100)
     pub reputation: i32,
@@ -52,7 +52,7 @@ pub enum SelectionStrategy {
 }
 
 /// Geographic region classification
-#[derive(Debug, Clone, Hash, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum GeographicRegion {
     NorthAmerica,
     SouthAmerica,
@@ -64,7 +64,7 @@ pub enum GeographicRegion {
 }
 
 /// Network provider classification
-#[derive(Debug, Clone, Hash, PartialEq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum NetworkProvider {
     Residential,
     DataCenter,
@@ -112,10 +112,10 @@ pub struct DiversityTargets {
 impl Default for DiversityTargets {
     fn default() -> Self {
         Self {
-            geographic_diversity: 0.6,  // 60% from different regions
-            network_diversity: 0.7,     // 70% from different providers
-            subnet_diversity: 0.2,      // Max 20% from same subnet
-            reputation_diversity: 0.8,  // 80% high-reputation peers
+            geographic_diversity: 0.6, // 60% from different regions
+            network_diversity: 0.7,    // 70% from different providers
+            subnet_diversity: 0.2,     // Max 20% from same subnet
+            reputation_diversity: 0.8, // 80% high-reputation peers
         }
     }
 }
@@ -142,23 +142,25 @@ impl PeerScore {
         let reputation_score = (self.reputation + 100) as f64 / 200.0; // Normalize to 0-1
         let response_score = 1.0 - (self.avg_response_time as f64 / 10000.0).min(1.0);
         let bandwidth_score = (self.bandwidth as f64 / 10_000_000.0).min(1.0); // Normalize to 10MB/s max
-        
+
         // Weighted composite score
-        (reputation_score * 0.25 +
-         self.reliability * 0.20 +
-         response_score * 0.15 +
-         bandwidth_score * 0.10 +
-         self.geographic_diversity * 0.10 +
-         self.network_diversity * 0.10 +
-         self.security_score * 0.05 +
-         self.uptime * 0.05).min(1.0)
+        (reputation_score * 0.25
+            + self.reliability * 0.20
+            + response_score * 0.15
+            + bandwidth_score * 0.10
+            + self.geographic_diversity * 0.10
+            + self.network_diversity * 0.10
+            + self.security_score * 0.05
+            + self.uptime * 0.05)
+            .min(1.0)
     }
 
     /// Update score based on successful interaction
     pub fn record_success(&mut self, response_time: Duration) {
         self.reputation = (self.reputation + 1).min(100);
         self.reliability = (self.reliability * 0.9 + 0.1).min(1.0);
-        self.avg_response_time = (self.avg_response_time * 9 + response_time.as_millis() as u64) / 10;
+        self.avg_response_time =
+            (self.avg_response_time * 9 + response_time.as_millis() as u64) / 10;
         self.last_seen = Instant::now();
     }
 
@@ -213,13 +215,18 @@ impl PeerSelector {
 
     /// Score-based peer selection
     fn select_score_based(&self, count: usize) -> Vec<PeerId> {
-        let mut scored_peers: Vec<(PeerId, f64)> = self.peers
+        let mut scored_peers: Vec<(PeerId, f64)> = self
+            .peers
             .iter()
             .map(|(id, metadata)| (*id, metadata.score.composite_score()))
             .collect();
-        
+
         scored_peers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        scored_peers.into_iter().take(count).map(|(id, _)| id).collect()
+        scored_peers
+            .into_iter()
+            .take(count)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Diversity-focused peer selection
@@ -227,7 +234,7 @@ impl PeerSelector {
         let mut selected = Vec::new();
         let mut region_counts = HashMap::new();
         let mut provider_counts = HashMap::new();
-        
+
         // Sort by diversity scores
         let mut candidates: Vec<&PeerMetadata> = self.peers.values().collect();
         candidates.sort_by(|a, b| {
@@ -235,60 +242,72 @@ impl PeerSelector {
             let b_diversity = b.score.geographic_diversity + b.score.network_diversity;
             b_diversity.partial_cmp(&a_diversity).unwrap()
         });
-        
+
         for peer in candidates {
             if selected.len() >= count {
                 break;
             }
-            
+
             // Check diversity constraints
             let region_count = region_counts.get(&peer.region).unwrap_or(&0);
             let provider_count = provider_counts.get(&peer.provider).unwrap_or(&0);
-            
-            let max_per_region = (count as f64 * (1.0 - self.diversity_targets.geographic_diversity)) as usize + 1;
-            let max_per_provider = (count as f64 * (1.0 - self.diversity_targets.network_diversity)) as usize + 1;
-            
+
+            let max_per_region =
+                (count as f64 * (1.0 - self.diversity_targets.geographic_diversity)) as usize + 1;
+            let max_per_provider =
+                (count as f64 * (1.0 - self.diversity_targets.network_diversity)) as usize + 1;
+
             if *region_count < max_per_region && *provider_count < max_per_provider {
                 selected.push(peer.peer_id);
                 *region_counts.entry(peer.region.clone()).or_insert(0) += 1;
                 *provider_counts.entry(peer.provider.clone()).or_insert(0) += 1;
             }
         }
-        
+
         selected
     }
 
     /// Performance-optimized peer selection
     fn select_performance_optimized(&self, count: usize) -> Vec<PeerId> {
-        let mut performance_peers: Vec<(PeerId, f64)> = self.peers
+        let mut performance_peers: Vec<(PeerId, f64)> = self
+            .peers
             .iter()
             .map(|(id, metadata)| {
-                let performance_score = metadata.score.reliability * 0.4 +
-                    (1.0 - (metadata.score.avg_response_time as f64 / 5000.0).min(1.0)) * 0.3 +
-                    (metadata.score.bandwidth as f64 / 10_000_000.0).min(1.0) * 0.3;
+                let performance_score = metadata.score.reliability * 0.4
+                    + (1.0 - (metadata.score.avg_response_time as f64 / 5000.0).min(1.0)) * 0.3
+                    + (metadata.score.bandwidth as f64 / 10_000_000.0).min(1.0) * 0.3;
                 (*id, performance_score)
             })
             .collect();
-        
+
         performance_peers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        performance_peers.into_iter().take(count).map(|(id, _)| id).collect()
+        performance_peers
+            .into_iter()
+            .take(count)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Security-focused peer selection
     fn select_security_focused(&self, count: usize) -> Vec<PeerId> {
-        let mut security_peers: Vec<(PeerId, f64)> = self.peers
+        let mut security_peers: Vec<(PeerId, f64)> = self
+            .peers
             .iter()
             .filter(|(_, metadata)| metadata.score.reputation >= 0) // Only positive reputation
             .map(|(id, metadata)| {
-                let security_score = metadata.score.security_score * 0.4 +
-                    ((metadata.score.reputation + 100) as f64 / 200.0) * 0.3 +
-                    metadata.score.protocol_compliance * 0.3;
+                let security_score = metadata.score.security_score * 0.4
+                    + ((metadata.score.reputation + 100) as f64 / 200.0) * 0.3
+                    + metadata.score.protocol_compliance * 0.3;
                 (*id, security_score)
             })
             .collect();
-        
+
         security_peers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        security_peers.into_iter().take(count).map(|(id, _)| id).collect()
+        security_peers
+            .into_iter()
+            .take(count)
+            .map(|(id, _)| id)
+            .collect()
     }
 
     /// Hybrid peer selection (balanced approach)
@@ -296,47 +315,49 @@ impl PeerSelector {
         let performance_count = count / 3;
         let diversity_count = count / 3;
         let security_count = count - performance_count - diversity_count;
-        
+
         let mut selected = Vec::new();
-        
+
         // Select high-performance peers
         let performance_peers = self.select_performance_optimized(performance_count);
         selected.extend(performance_peers);
-        
+
         // Select diverse peers (excluding already selected)
-        let remaining_peers: HashMap<PeerId, PeerMetadata> = self.peers
+        let remaining_peers: HashMap<PeerId, PeerMetadata> = self
+            .peers
             .iter()
             .filter(|(id, _)| !selected.contains(id))
             .map(|(id, metadata)| (*id, metadata.clone()))
             .collect();
-        
+
         let temp_selector = PeerSelector {
             peers: remaining_peers,
             strategy: SelectionStrategy::DiversityFocused,
             max_peers: self.max_peers,
             diversity_targets: self.diversity_targets.clone(),
         };
-        
+
         let diversity_peers = temp_selector.select_diversity_focused(diversity_count);
         selected.extend(diversity_peers);
-        
+
         // Select secure peers (excluding already selected)
-        let remaining_peers: HashMap<PeerId, PeerMetadata> = self.peers
+        let remaining_peers: HashMap<PeerId, PeerMetadata> = self
+            .peers
             .iter()
             .filter(|(id, _)| !selected.contains(id))
             .map(|(id, metadata)| (*id, metadata.clone()))
             .collect();
-        
+
         let temp_selector = PeerSelector {
             peers: remaining_peers,
             strategy: SelectionStrategy::SecurityFocused,
             max_peers: self.max_peers,
             diversity_targets: self.diversity_targets.clone(),
         };
-        
+
         let security_peers = temp_selector.select_security_focused(security_count);
         selected.extend(security_peers);
-        
+
         selected
     }
 
@@ -350,14 +371,16 @@ impl PeerSelector {
         let mut region_counts = HashMap::new();
         let mut provider_counts = HashMap::new();
         let mut subnet_counts = HashMap::new();
-        let high_reputation_count = self.peers.values()
+        let high_reputation_count = self
+            .peers
+            .values()
             .filter(|p| p.score.reputation >= 50)
             .count();
 
         for peer in self.peers.values() {
             *region_counts.entry(peer.region.clone()).or_insert(0) += 1;
             *provider_counts.entry(peer.provider.clone()).or_insert(0) += 1;
-            
+
             // Extract /24 subnet
             let subnet = match peer.ip_address {
                 IpAddr::V4(ip) => {
@@ -366,7 +389,10 @@ impl PeerSelector {
                 }
                 IpAddr::V6(ip) => {
                     let segments = ip.segments();
-                    format!("{:x}:{:x}:{:x}:{:x}", segments[0], segments[1], segments[2], segments[3])
+                    format!(
+                        "{:x}:{:x}:{:x}:{:x}",
+                        segments[0], segments[1], segments[2], segments[3]
+                    )
                 }
             };
             *subnet_counts.entry(subnet).or_insert(0) += 1;
@@ -375,7 +401,8 @@ impl PeerSelector {
         DiversityMetrics {
             geographic_diversity: 1.0 - (region_counts.len() as f64 / total_peers as f64),
             network_diversity: 1.0 - (provider_counts.len() as f64 / total_peers as f64),
-            subnet_diversity: subnet_counts.values().max().unwrap_or(&0) / total_peers,
+            subnet_diversity: *subnet_counts.values().max().unwrap_or(&0) as f64
+                / total_peers as f64,
             reputation_diversity: high_reputation_count as f64 / total_peers as f64,
         }
     }

@@ -1,16 +1,21 @@
 //! Manages the state of active governance proposals and votes.
 
 use std::collections::HashMap;
-use std::hash::Hasher;
 
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
-
-
 
 use crate::consensus::error::ConsensusError;
-use rusty_shared_types::Hash;
 use rusty_shared_types::governance::{GovernanceProposal, GovernanceVote, VoteChoice};
+use rusty_shared_types::Hash;
+
+/// Represents the type of voter in governance
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum VoterType {
+    /// Proof-of-Stake ticket holder
+    PoS,
+    /// Masternode operator
+    Masternode,
+}
 
 /// Represents the state of active governance proposals and votes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -32,7 +37,8 @@ impl ActiveProposals {
         if self.proposals.contains_key(&proposal_id) {
             return Err(ConsensusError::ProposalAlreadyExists(proposal_id));
         }
-        self.proposals.insert(proposal_id, (proposal, HashMap::new()));
+        self.proposals
+            .insert(proposal_id, (proposal, HashMap::new()));
         Ok(())
     }
 
@@ -40,21 +46,33 @@ impl ActiveProposals {
     pub fn record_vote(&mut self, vote: GovernanceVote) -> Result<(), ConsensusError> {
         let proposal_id = vote.proposal_id.clone();
         let voter_id = vote.voter_id.clone();
-        
-        let (_, votes) = self.proposals.get_mut(&proposal_id)
+
+        let (_, votes) = self
+            .proposals
+            .get_mut(&proposal_id)
             .ok_or_else(|| ConsensusError::ProposalNotFound(proposal_id.clone()))?;
-            
+        if votes.contains_key(&voter_id) {
+            return Err(ConsensusError::DuplicateGovernanceVote(
+                proposal_id.clone(),
+                voter_id,
+            ));
+        }
         votes.insert(voter_id, vote);
         Ok(())
     }
 
     /// Retrieves an active proposal by its ID.
     pub fn get_proposal(&self, proposal_id: &Hash) -> Option<&GovernanceProposal> {
-        self.proposals.get(proposal_id).map(|(proposal, _)| proposal)
+        self.proposals
+            .get(proposal_id)
+            .map(|(proposal, _)| proposal)
     }
 
     /// Retrieves votes for a specific proposal.
-    pub fn get_votes_for_proposal(&self, proposal_id: &Hash) -> Option<&HashMap<Hash, GovernanceVote>> {
+    pub fn get_votes_for_proposal(
+        &self,
+        proposal_id: &Hash,
+    ) -> Option<&HashMap<Hash, GovernanceVote>> {
         self.proposals.get(proposal_id).map(|(_, votes)| votes)
     }
 
@@ -67,86 +85,152 @@ impl ActiveProposals {
     }
 
     /// Removes a specific vote for a given proposal and voter.
-    pub fn remove_vote(&mut self, proposal_id: &Hash, voter_id: &Hash) -> Result<(), ConsensusError> {
-        let (_, votes) = self.proposals.get_mut(proposal_id)
+    pub fn remove_vote(
+        &mut self,
+        proposal_id: &Hash,
+        voter_id: &Hash,
+    ) -> Result<(), ConsensusError> {
+        let (_, votes) = self
+            .proposals
+            .get_mut(proposal_id)
             .ok_or_else(|| ConsensusError::ProposalNotFound(proposal_id.clone()))?;
-            
+
         if votes.remove(voter_id).is_none() {
-            return Err(ConsensusError::VoteNotFound(proposal_id.clone(), voter_id.clone()));
+            return Err(ConsensusError::VoteNotFound(
+                proposal_id.clone(),
+                voter_id.clone(),
+            ));
         }
         Ok(())
     }
 
-    // TODO: Implement quorum and supermajority check methods here, or in a governance-specific module
-    // These methods would need access to the current block height, live tickets, and masternode list
-    pub fn evaluate_proposal_at_height(&self, proposal_id: &Hash, current_height: u64, 
-        live_tickets_count: u64, active_masternode_count: u64,
-        pos_quorum_percentage: f64, mn_quorum_percentage: f64,
-        pos_approval_percentage: f64, mn_approval_percentage: f64
+    // Implement quorum and supermajority check methods
+    // These methods need access to the current block height, live tickets, and masternode list
+    pub fn evaluate_proposal_at_height(
+        &self,
+        proposal_id: &Hash,
+        current_height: u64,
+        live_tickets_count: u64,
+        active_masternode_count: u64,
+        pos_quorum_percentage: f64,
+        mn_quorum_percentage: f64,
+        pos_approval_percentage: f64,
+        mn_approval_percentage: f64,
+        voter_types: &HashMap<Hash, VoterType>,
     ) -> Result<ProposalOutcome, ConsensusError> {
-        let proposal = self.get_proposal(proposal_id)
-            .ok_or(ConsensusError::Internal("Proposal not found for evaluation.".to_string()))?;
+        let proposal = self
+            .get_proposal(proposal_id)
+            .ok_or(ConsensusError::Internal(
+                "Proposal not found for evaluation.".to_string(),
+            ))?;
 
-        if current_height < proposal.start_block_height || current_height > proposal.end_block_height {
-            return Ok(ProposalOutcome::InProgress); // Or Expired if past end_block_height
+        if current_height < proposal.start_block_height {
+            return Ok(ProposalOutcome::InProgress);
         }
 
-        let votes = self.get_votes_for_proposal(proposal_id)
-            .ok_or(ConsensusError::Internal("Votes not found for proposal.".to_string()))?;
+        if current_height > proposal.end_block_height {
+            return Ok(ProposalOutcome::Expired);
+        }
 
-        let (mut pos_yes, mut pos_no, mut pos_abstain) = (0, 0, 0);
-        let (mut mn_yes, mut mn_no, mut mn_abstain) = (0, 0, 0);
+        let votes = self
+            .get_votes_for_proposal(proposal_id)
+            .ok_or(ConsensusError::Internal(
+                "Votes not found for proposal.".to_string(),
+            ))?;
 
-        // This part needs real data for voter type, which is not in VoteChoice.
-        // It should be passed in from the transaction during validation.
-        // For now, assuming votes are correctly categorized externally.
-        // A more robust solution would embed VoterType in GovernanceVote.
+        let (mut pos_yes, mut pos_no, mut _pos_abstain) = (0, 0, 0);
+        let (mut mn_yes, mut mn_no, mut _mn_abstain) = (0, 0, 0);
 
-        // Dummy aggregation for now, will refine with actual voter types
-        for (_voter_id, vote) in votes.iter() {
-            // In a real scenario, you'd query the blockchain state to determine if _voter_id is PoS or MN
-            // This would involve looking up the ticket or masternode entry.
-            // For this example, we'll just randomly assign for demonstration.
-            match rand::random::<bool>() { // Placeholder: replace with actual voter type check
-                true => { // PoS
-                    match vote.vote_choice {
-                        VoteChoice::Yes => pos_yes += 1,
-                        VoteChoice::No => pos_no += 1,
-                        VoteChoice::Abstain => pos_abstain += 1,
-                    }
+        // Categorize votes by voter type using the provided voter_types map
+        for (voter_id, vote) in votes.iter() {
+            match voter_types.get(voter_id) {
+                Some(VoterType::PoS) => match vote.vote_choice {
+                    VoteChoice::Yes => pos_yes += 1,
+                    VoteChoice::No => pos_no += 1,
+                    VoteChoice::Abstain => _pos_abstain += 1,
                 },
-                false => { // Masternode
-                    match vote.vote_choice {
-                        VoteChoice::Yes => mn_yes += 1,
-                        VoteChoice::No => mn_no += 1,
-                        VoteChoice::Abstain => mn_abstain += 1,
-                    }
+                Some(VoterType::Masternode) => match vote.vote_choice {
+                    VoteChoice::Yes => mn_yes += 1,
+                    VoteChoice::No => mn_no += 1,
+                    VoteChoice::Abstain => _mn_abstain += 1,
+                },
+                None => {
+                    // Unknown voter type - this should not happen if validation is proper
+                    log::warn!("Unknown voter type for voter ID: {:?}", voter_id);
+                    continue;
                 }
             }
         }
 
+        self.check_quorum_and_supermajority(
+            pos_yes,
+            pos_no,
+            mn_yes,
+            mn_no,
+            live_tickets_count,
+            active_masternode_count,
+            pos_quorum_percentage,
+            mn_quorum_percentage,
+            pos_approval_percentage,
+            mn_approval_percentage,
+        )
+    }
+
+    /// Check if quorum and supermajority requirements are met
+    pub fn check_quorum_and_supermajority(
+        &self,
+        pos_yes: u64,
+        pos_no: u64,
+        mn_yes: u64,
+        mn_no: u64,
+        live_tickets_count: u64,
+        active_masternode_count: u64,
+        pos_quorum_percentage: f64,
+        mn_quorum_percentage: f64,
+        pos_approval_percentage: f64,
+        mn_approval_percentage: f64,
+    ) -> Result<ProposalOutcome, ConsensusError> {
         let pos_total_cast = pos_yes + pos_no;
         let mn_total_cast = mn_yes + mn_no;
 
         // Quorum Check
-        // Needs theoretical max live tickets and active masternodes, which are external inputs.
-        // Assuming current_live_tickets and current_active_masternodes are passed in.
-        // These values would come from the BlockchainState.
-        let pos_quorum_met = (pos_total_cast as f64 / live_tickets_count as f64) >= pos_quorum_percentage;
-        let mn_quorum_met = (mn_total_cast as f64 / active_masternode_count as f64) >= mn_quorum_percentage;
+        let pos_quorum_met = if live_tickets_count > 0 {
+            (pos_total_cast as f64 / live_tickets_count as f64) >= pos_quorum_percentage
+        } else {
+            false
+        };
+
+        let mn_quorum_met = if active_masternode_count > 0 {
+            (mn_total_cast as f64 / active_masternode_count as f64) >= mn_quorum_percentage
+        } else {
+            false
+        };
 
         if !pos_quorum_met || !mn_quorum_met {
-            return Ok(ProposalOutcome::Rejected { reason: "Quorum not met".to_string() });
+            return Ok(ProposalOutcome::Rejected {
+                reason: "Quorum not met".to_string(),
+            });
         }
 
         // Supermajority Check
-        let pos_approval_met = (pos_yes as f64 / pos_total_cast as f64) >= pos_approval_percentage;
-        let mn_approval_met = (mn_yes as f64 / mn_total_cast as f64) >= mn_approval_percentage;
+        let pos_approval_met = if pos_total_cast > 0 {
+            (pos_yes as f64 / pos_total_cast as f64) >= pos_approval_percentage
+        } else {
+            false
+        };
+
+        let mn_approval_met = if mn_total_cast > 0 {
+            (mn_yes as f64 / mn_total_cast as f64) >= mn_approval_percentage
+        } else {
+            false
+        };
 
         if pos_approval_met && mn_approval_met {
             Ok(ProposalOutcome::Passed)
         } else {
-            Ok(ProposalOutcome::Rejected { reason: "Supermajority not met".to_string() })
+            Ok(ProposalOutcome::Rejected {
+                reason: "Supermajority not met".to_string(),
+            })
         }
     }
 }

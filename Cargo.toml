@@ -35,11 +35,17 @@ ed25519-dalek = { version = "1.0", features = ["rand_core"] }
 ed25519 = "1.5"
 rand_core = { version = "0.6.4", features = ["std"] }
 rand = "0.7"  # Pin to version compatible with ed25519_dalek
+pqcrypto-dilithium = "0.5"
+pqcrypto-falcon = "0.4.1"
+pqcrypto-traits = "0.3"
+bs58 = "0.4"
+ripemd = "0.1"
 
 # BLS and threshold signature dependencies - use newer versions that work with Rust 1.87
 threshold_crypto = "0.4.0"
 bls12_381 = "0.8.0"          # Use newer version that doesn't have yanked dependencies
 group = "0.13.0"             # Use newer version that doesn't have yanked dependencies
+subtle = "2.5"
 
 # Network dependencies
 tokio = { version = "1.0", features = ["full"] }

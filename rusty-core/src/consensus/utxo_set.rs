@@ -1,9 +1,10 @@
 // rusty-core/src/consensus/utxo_set.rs
 
-use std::collections::HashMap;
-use rusty_shared_types::{Block, OutPoint, Transaction, TxOutput, Utxo, TicketId};
 use crate::consensus::error::ConsensusError;
-use serde::{Serialize, Deserialize};
+use crate::constants::LOCKTIME_THRESHOLD;
+use rusty_shared_types::{Block, OutPoint, TicketId, Transaction, TxOutput, Utxo};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// A set of unspent transaction outputs (UTXOs).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -104,7 +105,7 @@ impl UtxoSet {
             let outpoint = input.previous_output.clone();
             self.remove_utxo(&outpoint);
         }
-        
+
         let is_coinbase = tx.is_coinbase();
         for (i, output) in tx.get_outputs().iter().enumerate() {
             self.add_utxo(
@@ -153,7 +154,7 @@ impl UtxoSet {
                 // But `remove_utxo` already returns `Option<Utxo>`, so we can just re-add it.
                 let outpoint = input.previous_output.clone();
                 if let Some(original_utxo) = self.get_historical_utxo(&outpoint) {
-                     self.add_utxo(outpoint.clone(), original_utxo);
+                    self.add_utxo(outpoint.clone(), original_utxo);
                 } else {
                     return Err(ConsensusError::FailedToFindHistoricalUTXO(outpoint));
                 }
@@ -172,7 +173,11 @@ impl UtxoSet {
         } else {
             // Dummy Utxo for demonstration if not found historically
             Some(Utxo {
-                output: TxOutput { value: 0, script_pubkey: vec![], memo: None },
+                output: TxOutput {
+                    value: 0,
+                    script_pubkey: vec![],
+                    memo: None,
+                },
                 is_coinbase: false,
                 creation_height: 0,
             })
@@ -181,6 +186,41 @@ impl UtxoSet {
 
     /// Validates the inputs of a transaction.
     pub fn validate_transaction_inputs(&self, tx: &Transaction) -> bool {
+        self.validate_transaction_inputs_at_height(tx, u64::MAX) // Use max height to skip maturity checks for backward compatibility
+    }
+
+    /// Validates the inputs of a transaction with coinbase maturity and other height-dependent checks.
+    pub fn validate_transaction_inputs_at_height(
+        &self,
+        tx: &Transaction,
+        current_height: u64,
+    ) -> bool {
+        self.validate_transaction_inputs_with_params(tx, current_height, 100) // Default coinbase maturity of 100 blocks
+    }
+
+    /// Validates the inputs of a transaction with explicit parameters.
+    pub fn validate_transaction_inputs_with_params(
+        &self,
+        tx: &Transaction,
+        current_height: u64,
+        coinbase_maturity: u32,
+    ) -> bool {
+        self.validate_transaction_comprehensive(
+            tx,
+            current_height,
+            coinbase_maturity,
+            crate::constants::DUST_LIMIT,
+        )
+    }
+
+    /// Comprehensive transaction validation including coinbase maturity, dust limit, and other checks.
+    pub fn validate_transaction_comprehensive(
+        &self,
+        tx: &Transaction,
+        current_height: u64,
+        coinbase_maturity: u32,
+        dust_limit: u64,
+    ) -> bool {
         let mut total_input_value = 0;
         let mut spent_utxos_in_tx = std::collections::HashSet::new(); // Tracks UTXOs spent within this transaction
 
@@ -194,8 +234,36 @@ impl UtxoSet {
 
             if let Some(utxo) = self.utxos.get(&outpoint) {
                 total_input_value += utxo.output.value;
-                // TODO: Implement coinbase maturity check here using utxo.is_coinbase and utxo.creation_height
-                // TODO: Implement lock_time/sequence validation here
+
+                // Coinbase maturity check
+                if utxo.is_coinbase && current_height != u64::MAX {
+                    let blocks_since_creation = current_height.saturating_sub(utxo.creation_height);
+                    if blocks_since_creation < coinbase_maturity as u64 {
+                        // Coinbase UTXO is not mature yet
+                        return false;
+                    }
+                }
+
+                // Lock time and sequence validation
+                if current_height != u64::MAX {
+                    // Basic lock time validation (more comprehensive validation would check against median time)
+                    if tx.get_lock_time() >= LOCKTIME_THRESHOLD {
+                        // Lock time is a timestamp - in a full implementation, compare against median block time
+                        // For now, we'll skip timestamp-based validation
+                    } else if tx.get_lock_time() > 0 {
+                        // Lock time is a block height
+                        if current_height < tx.get_lock_time() as u64 {
+                            // Transaction is time-locked
+                            return false;
+                        }
+                    }
+
+                    // Sequence number validation for Replace-By-Fee (RBF)
+                    if tx_in.sequence < 0xfffffffe {
+                        // Input signals RBF - additional validation could be added here
+                        // For now, we accept RBF-enabled transactions
+                    }
+                }
             } else {
                 // UTXO not found
                 return false;
@@ -205,7 +273,12 @@ impl UtxoSet {
         let mut total_output_value = 0;
         for tx_out in tx.get_outputs() {
             total_output_value += tx_out.value;
-            // TODO: Implement dust limit check here
+
+            // Dust limit check
+            if tx_out.value < dust_limit {
+                // Output value is below dust limit
+                return false;
+            }
         }
 
         // Ensure input value is greater than or equal to output value + fee
@@ -214,9 +287,12 @@ impl UtxoSet {
 
     /// Returns a list of `TicketId`s that correspond to the inputs used in the transactions within the UTXO set.
     pub fn get_used_inputs_as_ticket_ids(&self) -> Vec<TicketId> {
-        self.utxos.iter()
+        self.utxos
+            .iter()
             .filter_map(|(outpoint, utxo)| {
-                if utxo.is_coinbase { return None; }
+                if utxo.is_coinbase {
+                    return None;
+                }
                 // Assuming a ticket's outpoint matches its TicketId's underlying OutPoint
                 // This is a simplification and assumes TicketId is directly derived from OutPoint or similar
                 // In a real system, you'd likely have a way to map OutPoint to TicketId.
@@ -230,7 +306,7 @@ impl UtxoSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusty_shared_types::{TxInput, TxOutput, OutPoint, Block, BlockHeader};
+    use rusty_shared_types::{Block, BlockHeader, OutPoint, TxInput, TxOutput};
 
     /// Creates a dummy transaction for testing.
     fn create_dummy_tx(inputs: Vec<TxInput>, outputs: Vec<TxOutput>, fee: u64) -> Transaction {
@@ -247,8 +323,19 @@ mod tests {
     #[test]
     fn test_add_and_remove_utxo() {
         let mut utxo_set = UtxoSet::new();
-        let outpoint = OutPoint { txid: [0u8; 32], vout: 0 };
-        let tx_out = Utxo { output: TxOutput { value: 100, script_pubkey: vec![], memo: None }, is_coinbase: false, creation_height: 0 };
+        let outpoint = OutPoint {
+            txid: [0u8; 32],
+            vout: 0,
+        };
+        let tx_out = Utxo {
+            output: TxOutput {
+                value: 100,
+                script_pubkey: vec![],
+                memo: None,
+            },
+            is_coinbase: false,
+            creation_height: 0,
+        };
 
         utxo_set.add_utxo(outpoint.clone(), tx_out.clone());
         assert!(utxo_set.contains_utxo(&outpoint));
@@ -265,24 +352,60 @@ mod tests {
 
         // Initial UTXO for Tx1 input
         let initial_txid = [0u8; 32];
-        let initial_outpoint = OutPoint { txid: initial_txid, vout: 0 };
-        let initial_tx_out = Utxo { output: TxOutput { value: 200, script_pubkey: vec![], memo: None }, is_coinbase: false, creation_height: 0 };
+        let initial_outpoint = OutPoint {
+            txid: initial_txid,
+            vout: 0,
+        };
+        let initial_tx_out = Utxo {
+            output: TxOutput {
+                value: 200,
+                script_pubkey: vec![],
+                memo: None,
+            },
+            is_coinbase: false,
+            creation_height: 0,
+        };
         utxo_set.add_utxo(initial_outpoint.clone(), initial_tx_out);
 
         // Tx1: Spends initial_outpoint, creates new_outpoint1 and new_outpoint2
-        let tx1_input = TxInput { previous_output: initial_outpoint.clone(), script_sig: vec![], sequence: 0, witness: vec![] };
-        let tx1_output1 = TxOutput { value: 50, script_pubkey: vec![], memo: None };
-        let tx1_output2 = TxOutput { value: 140, script_pubkey: vec![], memo: None }; // 10 fee
-        let tx1 = create_dummy_tx(vec![tx1_input], vec![tx1_output1.clone(), tx1_output2.clone()], 10);
+        let tx1_input = TxInput::from_outpoint(initial_outpoint.clone(), vec![], 0, vec![]);
+        let tx1_output1 = TxOutput {
+            value: 50,
+            script_pubkey: vec![],
+            memo: None,
+        };
+        let tx1_output2 = TxOutput {
+            value: 140,
+            script_pubkey: vec![],
+            memo: None,
+        }; // 10 fee
+        let tx1 = create_dummy_tx(
+            vec![tx1_input],
+            vec![tx1_output1.clone(), tx1_output2.clone()],
+            10,
+        );
         let tx1_id = tx1.txid();
 
         // Tx2: Creates new_outpoint3
-        let tx2_output1 = TxOutput { value: 300, script_pubkey: vec![], memo: None };
+        let tx2_output1 = TxOutput {
+            value: 300,
+            script_pubkey: vec![],
+            memo: None,
+        };
         let tx2 = create_dummy_tx(vec![], vec![tx2_output1.clone()], 0);
         let tx2_id = tx2.txid();
 
         let block = Block {
-            header: BlockHeader { version: 1, previous_block_hash: [0u8; 32], merkle_root: [0u8; 32], timestamp: 0, bits: 0, nonce: 0, height: 0, difficulty_target: 0, state_root: [0u8; 32] },
+            header: BlockHeader {
+                version: 1,
+                previous_block_hash: [0u8; 32],
+                merkle_root: [0u8; 32],
+                timestamp: 0,
+                nonce: 0,
+                height: 0,
+                difficulty_target: 0,
+                state_root: [0u8; 32],
+            },
             transactions: vec![tx1.clone(), tx2.clone()],
             ticket_votes: vec![],
         };
@@ -293,15 +416,24 @@ mod tests {
         assert!(!utxo_set.contains_utxo(&initial_outpoint));
 
         // Check if new UTXOs from Tx1 are added
-        let new_outpoint1 = OutPoint { txid: tx1_id, vout: 0 };
-        let new_outpoint2 = OutPoint { txid: tx1_id, vout: 1 };
+        let new_outpoint1 = OutPoint {
+            txid: tx1_id,
+            vout: 0,
+        };
+        let new_outpoint2 = OutPoint {
+            txid: tx1_id,
+            vout: 1,
+        };
         assert!(utxo_set.contains_utxo(&new_outpoint1));
         assert!(utxo_set.contains_utxo(&new_outpoint2));
         assert_eq!(utxo_set.get_utxo(&new_outpoint1).unwrap().output.value, 50);
         assert_eq!(utxo_set.get_utxo(&new_outpoint2).unwrap().output.value, 140);
 
         // Check if new UTXOs from Tx2 are added
-        let new_outpoint3 = OutPoint { txid: tx2_id, vout: 0 };
+        let new_outpoint3 = OutPoint {
+            txid: tx2_id,
+            vout: 0,
+        };
         assert!(utxo_set.contains_utxo(&new_outpoint3));
         assert_eq!(utxo_set.get_utxo(&new_outpoint3).unwrap().output.value, 300);
     }
@@ -309,23 +441,49 @@ mod tests {
     #[test]
     fn test_validate_transaction_inputs_valid() {
         let mut utxo_set = UtxoSet::new();
-        
+
         // Use different txids for the outpoints to make them unique
         let mut txid1 = [0u8; 32];
         txid1[0] = 1;
-        let outpoint1 = OutPoint { txid: txid1, vout: 0 };
-        let tx_out1 = Utxo { output: TxOutput { value: 100, script_pubkey: vec![], memo: None }, is_coinbase: false, creation_height: 0 };
+        let outpoint1 = OutPoint {
+            txid: txid1,
+            vout: 0,
+        };
+        let tx_out1 = Utxo {
+            output: TxOutput {
+                value: 1000,
+                script_pubkey: vec![],
+                memo: None,
+            },
+            is_coinbase: false,
+            creation_height: 0,
+        };
         utxo_set.add_utxo(outpoint1.clone(), tx_out1);
 
         let mut txid2 = [0u8; 32];
         txid2[0] = 2;
-        let outpoint2 = OutPoint { txid: txid2, vout: 0 };
-        let tx_out2 = Utxo { output: TxOutput { value: 50, script_pubkey: vec![], memo: None }, is_coinbase: false, creation_height: 0 };
+        let outpoint2 = OutPoint {
+            txid: txid2,
+            vout: 0,
+        };
+        let tx_out2 = Utxo {
+            output: TxOutput {
+                value: 500,
+                script_pubkey: vec![],
+                memo: None,
+            },
+            is_coinbase: false,
+            creation_height: 0,
+        };
         utxo_set.add_utxo(outpoint2.clone(), tx_out2);
 
-        let tx_in1 = TxInput { previous_output: outpoint1, script_sig: vec![], sequence: 0, witness: vec![] };
-        let tx_in2 = TxInput { previous_output: outpoint2, script_sig: vec![], sequence: 0, witness: vec![] };
-        let tx_out_new = TxOutput { value: 140, script_pubkey: vec![], memo: None }; // 10 fee
+        let tx_in1 = TxInput::from_outpoint(outpoint1, vec![], 0, vec![]);
+        let tx_in2 = TxInput::from_outpoint(outpoint2, vec![], 0, vec![]);
+        let tx_out_new = TxOutput {
+            value: 1400,
+            script_pubkey: vec![],
+            memo: None,
+        }; // 10 fee
 
         let tx = create_dummy_tx(vec![tx_in1, tx_in2], vec![tx_out_new], 10);
         assert!(utxo_set.validate_transaction_inputs(&tx));
@@ -339,12 +497,34 @@ mod tests {
     #[test]
     fn test_save_and_load_utxo_set() {
         let mut utxo_set = UtxoSet::new();
-        let outpoint1 = OutPoint { txid: [0u8; 32], vout: 0 };
-        let tx_out1 = Utxo { output: TxOutput { value: 100, script_pubkey: vec![], memo: None }, is_coinbase: false, creation_height: 0 };
+        let outpoint1 = OutPoint {
+            txid: [0u8; 32],
+            vout: 0,
+        };
+        let tx_out1 = Utxo {
+            output: TxOutput {
+                value: 100,
+                script_pubkey: vec![],
+                memo: None,
+            },
+            is_coinbase: false,
+            creation_height: 0,
+        };
         utxo_set.add_utxo(outpoint1.clone(), tx_out1);
 
-        let outpoint2 = OutPoint { txid: [0u8; 32], vout: 1 };
-        let tx_out2 = Utxo { output: TxOutput { value: 200, script_pubkey: vec![], memo: None }, is_coinbase: false, creation_height: 0 };
+        let outpoint2 = OutPoint {
+            txid: [0u8; 32],
+            vout: 1,
+        };
+        let tx_out2 = Utxo {
+            output: TxOutput {
+                value: 200,
+                script_pubkey: vec![],
+                memo: None,
+            },
+            is_coinbase: false,
+            creation_height: 0,
+        };
         utxo_set.add_utxo(outpoint2.clone(), tx_out2);
 
         let path = std::path::PathBuf::from("test_utxo_set.bin");
@@ -355,8 +535,14 @@ mod tests {
         assert_eq!(utxo_set.utxos.len(), loaded_utxo_set.utxos.len());
         assert!(loaded_utxo_set.contains_utxo(&outpoint1));
         assert!(loaded_utxo_set.contains_utxo(&outpoint2));
-        assert_eq!(loaded_utxo_set.get_utxo(&outpoint1).unwrap().output.value, 100);
-        assert_eq!(loaded_utxo_set.get_utxo(&outpoint2).unwrap().output.value, 200);
+        assert_eq!(
+            loaded_utxo_set.get_utxo(&outpoint1).unwrap().output.value,
+            100
+        );
+        assert_eq!(
+            loaded_utxo_set.get_utxo(&outpoint2).unwrap().output.value,
+            200
+        );
 
         // Clean up the test file
         std::fs::remove_file(&path).unwrap();
@@ -365,13 +551,31 @@ mod tests {
     #[test]
     fn test_validate_transaction_inputs_double_spend_in_same_tx() {
         let mut utxo_set = UtxoSet::new();
-        let outpoint = OutPoint { txid: [0u8; 32], vout: 0 };
-        let tx_out = TxOutput { value: 100, script_pubkey: vec![], memo: None };
-        utxo_set.add_utxo(outpoint.clone(), Utxo { output: tx_out, is_coinbase: false, creation_height: 0 });
+        let outpoint = OutPoint {
+            txid: [0u8; 32],
+            vout: 0,
+        };
+        let tx_out = TxOutput {
+            value: 100,
+            script_pubkey: vec![],
+            memo: None,
+        };
+        utxo_set.add_utxo(
+            outpoint.clone(),
+            Utxo {
+                output: tx_out,
+                is_coinbase: false,
+                creation_height: 0,
+            },
+        );
 
-        let tx_in1 = TxInput { previous_output: outpoint.clone(), script_sig: vec![], sequence: 0, witness: vec![] };
-        let tx_in2 = TxInput { previous_output: outpoint.clone(), script_sig: vec![], sequence: 0, witness: vec![] };
-        let tx_out_new = TxOutput { value: 50, script_pubkey: vec![], memo: None };
+        let tx_in1 = TxInput::from_outpoint(outpoint.clone(), vec![], 0, vec![]);
+        let tx_in2 = TxInput::from_outpoint(outpoint.clone(), vec![], 0, vec![]);
+        let tx_out_new = TxOutput {
+            value: 50,
+            script_pubkey: vec![],
+            memo: None,
+        };
 
         let tx = create_dummy_tx(vec![tx_in1, tx_in2], vec![tx_out_new], 0);
         assert!(!utxo_set.validate_transaction_inputs(&tx));

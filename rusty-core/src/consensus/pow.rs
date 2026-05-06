@@ -2,7 +2,6 @@ use blake3;
 use primitive_types::U256;
 use rusty_shared_types::BlockHeader;
 
-
 // 2.2 Algorithm Parameters
 // 2.2 Algorithm Parameters
 const SCRATCHPAD_SIZE: usize = 1 << 30; // 1 GiB
@@ -11,9 +10,18 @@ const ITERATIONS_PER_HASH: usize = 1 << 20; // 1,048,576
 // Difficulty Adjustment Parameters
 const TARGET_BLOCK_TIME_SECS: u64 = 150; // 2.5 minutes (as per spec 02a)
 const DIFFICULTY_ADJUSTMENT_INTERVAL: u32 = 2016; // Blocks (approx 3.5 days at 2.5 min/block)
-const MAX_TARGET: U256 = U256([0x00000000FFFF0000, 0x0000000000000000, 0x0000000000000000, 0x0000000000000000]); // Example max target
+const MAX_TARGET: U256 = U256([
+    0x00000000FFFF0000,
+    0x0000000000000000,
+    0x0000000000000000,
+    0x0000000000000000,
+]); // Example max target
 
-pub fn calculate_next_difficulty(last_block_time: u64, first_block_time: u64, current_target: U256) -> U256 {
+pub fn calculate_next_difficulty(
+    last_block_time: u64,
+    first_block_time: u64,
+    current_target: U256,
+) -> U256 {
     let actual_time_taken = last_block_time - first_block_time;
     let expected_time_taken = TARGET_BLOCK_TIME_SECS * DIFFICULTY_ADJUSTMENT_INTERVAL as u64;
 
@@ -37,9 +45,6 @@ pub fn calculate_next_difficulty(last_block_time: u64, first_block_time: u64, cu
 
     new_target
 }
-
-
-
 
 pub fn calculate_hash(header: &BlockHeader) -> [u8; 32] {
     // 2.3 OxideHash Procedure
@@ -114,18 +119,6 @@ pub fn verify_pow(header: &BlockHeader, difficulty_target: U256) -> bool {
     hash_u256 <= difficulty_target
 }
 
-/// Calculate target from compact difficulty representation
-pub fn calculate_target(compact_target: u32) -> U256 {
-    let exponent = (compact_target >> 24) & 0xff;
-    let mantissa = compact_target & 0x00ffffff;
-
-    if exponent <= 3 {
-        U256::from(mantissa >> (8 * (3 - exponent)))
-    } else {
-        U256::from(mantissa) << (8 * (exponent - 3))
-    }
-}
-
 /// Calculate new target based on difficulty adjustment algorithm
 pub fn calculate_new_target(
     current_target: U256,
@@ -138,7 +131,9 @@ pub fn calculate_new_target(
     let mut new_target = current_target;
 
     // Clamp the actual timespan to prevent extreme adjustments
-    let clamped_timespan = actual_timespan.max(target_timespan / 4).min(target_timespan * 4);
+    let clamped_timespan = actual_timespan
+        .max(target_timespan / 4)
+        .min(target_timespan * 4);
 
     // Adjust the target
     new_target = new_target * U256::from(clamped_timespan) / U256::from(target_timespan);
@@ -149,4 +144,39 @@ pub fn calculate_new_target(
     }
 
     new_target
+}
+
+/// Converts a compact representation (Bitcoin-style) to a U256 target.
+pub fn compact_to_target(compact: u32) -> U256 {
+    let exponent = (compact >> 24) as u8;
+    let mantissa = compact & 0x007fffff;
+    let negative = (compact & 0x00800000) != 0;
+    let mut value = U256::from(mantissa);
+    if exponent <= 3 {
+        value >>= 8 * (3 - exponent as usize);
+    } else {
+        value <<= 8 * (exponent as usize - 3);
+    }
+    if negative {
+        // Bitcoin ignores the sign bit, so we do too
+    }
+    value
+}
+
+/// Converts a U256 target to its compact representation (Bitcoin-style).
+pub fn target_to_compact(target: U256) -> u32 {
+    let mut size = (32 - (target.leading_zeros() / 8)) as u32;
+    let mut compact: u32;
+    if size <= 3 {
+        compact = (target.low_u32() << (8 * (3 - size))) as u32;
+    } else {
+        let t = target >> (8 * (size - 3));
+        compact = t.low_u32() as u32;
+    }
+    // The sign bit is set if the result is negative (shouldn't happen for targets)
+    if (compact & 0x00800000) != 0 {
+        compact >>= 8;
+        size += 1;
+    }
+    ((size as u32) << 24) | (compact & 0x007fffff)
 }

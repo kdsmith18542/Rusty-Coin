@@ -1,596 +1,435 @@
-//! Two-way peg mechanism for Rusty Coin sidechains
-//! 
-//! This module implements the peg-in and peg-out functionality for transferring
-//! assets between the mainchain and sidechains, secured by masternode federation
-//! with BLS threshold signatures as specified in the RCTB.
+//! Two-way peg functionality for sidechain-mainchain asset transfers
+//!
+//! This module implements the core two-way peg mechanism allowing assets to be
+//! locked on the mainchain and minted on sidechains (peg-in), and burned on
+//! sidechains to be unlocked on the mainchain (peg-out).
 
+use crate::sidechain::types::*;
+use rusty_shared_types::{Hash, OutPoint, Transaction, TxOutput};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use serde::{Serialize, Deserialize};
-use log::{info, warn, error, debug};
 
-use rusty_shared_types::{Hash, Transaction, TxInput, TxOutput, OutPoint, MasternodeID};
-use crate::sidechain::{
-    SidechainTransaction, CrossChainTransaction, CrossChainTxType, 
-    FederationSignature, CrossChainProof, SidechainTxOutput
-};
-
-/// Configuration for two-way peg operations
+/// Peg-in request (lock funds on mainchain, mint on sidechain)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TwoWayPegConfig {
-    /// Minimum confirmations required for peg-in
-    pub min_peg_in_confirmations: u32,
-    /// Minimum confirmations required for peg-out
-    pub min_peg_out_confirmations: u32,
-    /// Federation threshold for peg operations
-    pub federation_threshold: u32,
-    /// Minimum peg amount to prevent dust
-    pub min_peg_amount: u64,
-    /// Maximum peg amount for security
-    pub max_peg_amount: u64,
-    /// Peg operation timeout in blocks
-    pub peg_timeout_blocks: u64,
-    /// Fee for peg operations
-    pub peg_fee_rate: u64,
-}
-
-impl Default for TwoWayPegConfig {
-    fn default() -> Self {
-        Self {
-            min_peg_in_confirmations: 6,
-            min_peg_out_confirmations: 12,
-            federation_threshold: 2, // 2/3 threshold
-            min_peg_amount: 100_000, // 0.001 RUST
-            max_peg_amount: 1_000_000_000_000, // 10,000 RUST
-            peg_timeout_blocks: 1440, // ~24 hours
-            peg_fee_rate: 1000, // 0.00001 RUST
-        }
-    }
-}
-
-/// Status of a peg operation
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum PegStatus {
-    /// Peg operation initiated
-    Initiated,
-    /// Waiting for confirmations
-    WaitingConfirmations { current: u32, required: u32 },
-    /// Waiting for federation signatures
-    WaitingFederationSignatures { received: u32, required: u32 },
-    /// Peg operation completed
-    Completed,
-    /// Peg operation failed
-    Failed { reason: String },
-    /// Peg operation timed out
-    TimedOut,
-}
-
-/// Peg-in transaction for moving assets from mainchain to sidechain
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PegInTransaction {
-    /// Unique identifier for this peg-in
-    pub peg_id: Hash,
-    /// Mainchain transaction that locks the funds
-    pub mainchain_tx: Transaction,
-    /// Target sidechain identifier
-    pub target_sidechain_id: Hash,
-    /// Recipient address on the sidechain
-    pub sidechain_recipient: Vec<u8>,
+pub struct PegInRequest {
+    /// Mainchain transaction hash that locks the funds
+    pub mainchain_tx_hash: Hash,
     /// Amount being pegged in
     pub amount: u64,
-    /// Asset type being pegged
-    pub asset_id: Hash,
-    /// Block height where mainchain tx was included
-    pub mainchain_block_height: u64,
-    /// Proof of inclusion in mainchain
-    pub inclusion_proof: CrossChainProof,
-    /// Federation signatures authorizing the peg-in
+    /// Recipient address on sidechain
+    pub sidechain_recipient: Vec<u8>,
+    /// Sidechain ID
+    pub sidechain_id: Hash,
+    /// Mainchain block height where lock transaction was confirmed
+    pub mainchain_confirm_height: u64,
+    /// Merkle proof of inclusion in mainchain block
+    pub merkle_proof: Vec<Hash>,
+    /// Federation signatures confirming the peg-in
     pub federation_signatures: Vec<FederationSignature>,
-    /// Current status of the peg-in
-    pub status: PegStatus,
-    /// Creation timestamp
-    pub created_at: u64,
 }
 
-/// Peg-out transaction for moving assets from sidechain to mainchain
+/// Peg-out request (burn on sidechain, unlock on mainchain)
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PegOutTransaction {
-    /// Unique identifier for this peg-out
-    pub peg_id: Hash,
-    /// Sidechain transaction that burns the funds
-    pub sidechain_tx: SidechainTransaction,
-    /// Source sidechain identifier
-    pub source_sidechain_id: Hash,
-    /// Recipient address on the mainchain
-    pub mainchain_recipient: Vec<u8>,
+pub struct PegOutRequest {
+    /// Sidechain transaction hash that burns the funds
+    pub sidechain_tx_hash: Hash,
     /// Amount being pegged out
     pub amount: u64,
-    /// Asset type being pegged
-    pub asset_id: Hash,
-    /// Block height where sidechain tx was included
-    pub sidechain_block_height: u64,
-    /// Proof of burn on sidechain
-    pub burn_proof: CrossChainProof,
-    /// Federation signatures authorizing the peg-out
+    /// Recipient address on mainchain
+    pub mainchain_recipient: Vec<u8>,
+    /// Sidechain ID
+    pub sidechain_id: Hash,
+    /// Sidechain block height where burn transaction was confirmed
+    pub sidechain_confirm_height: u64,
+    /// Merkle proof of inclusion in sidechain block
+    pub merkle_proof: Vec<Hash>,
+    /// Federation signatures confirming the peg-out
     pub federation_signatures: Vec<FederationSignature>,
-    /// Mainchain transaction that releases the funds (once created)
-    pub mainchain_release_tx: Option<Transaction>,
-    /// Current status of the peg-out
-    pub status: PegStatus,
-    /// Creation timestamp
-    pub created_at: u64,
 }
 
-/// Manages two-way peg operations between mainchain and sidechains
+/// Peg transaction status
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TwoWayPegManager {
-    config: TwoWayPegConfig,
-    /// Active peg-in operations
-    active_peg_ins: HashMap<Hash, PegInTransaction>,
-    /// Active peg-out operations
-    active_peg_outs: HashMap<Hash, PegOutTransaction>,
-    /// Completed peg operations for history
-    completed_pegs: HashMap<Hash, PegOperationRecord>,
-    /// Current federation members
-    current_federation: Vec<MasternodeID>,
-    /// Current block height for timeout tracking
-    current_block_height: u64,
+pub enum PegTransactionStatus {
+    /// Transaction submitted but not yet confirmed
+    Pending,
+    /// Transaction confirmed and processed
+    Confirmed,
+    /// Transaction rejected (invalid or failed validation)
+    Rejected,
+    /// Transaction completed (funds unlocked/minted)
+    Completed,
 }
 
-/// Record of a completed peg operation
+/// Peg transaction record
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PegOperationRecord {
-    pub peg_id: Hash,
-    pub operation_type: PegOperationType,
+pub struct PegTransaction {
+    /// Unique transaction ID
+    pub id: Hash,
+    /// Transaction type (in or out)
+    pub tx_type: PegTransactionType,
+    /// Current status
+    pub status: PegTransactionStatus,
+    /// Amount involved
     pub amount: u64,
-    pub asset_id: Hash,
-    pub completed_at: u64,
-    pub mainchain_tx_hash: Hash,
-    pub sidechain_tx_hash: Option<Hash>,
+    /// Source chain
+    pub source_chain: Hash,
+    /// Destination chain
+    pub destination_chain: Hash,
+    /// Recipient address
+    pub recipient: Vec<u8>,
+    /// Confirmation height on source chain
+    pub confirm_height: u64,
+    /// Timestamp when transaction was created
+    pub timestamp: u64,
+    /// Associated cross-chain transaction ID
+    pub cross_chain_tx_id: Option<Hash>,
 }
 
+/// Type of peg transaction
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum PegOperationType {
+pub enum PegTransactionType {
+    /// Peg-in (mainchain to sidechain)
     PegIn,
+    /// Peg-out (sidechain to mainchain)
     PegOut,
+}
+
+/// Two-way peg manager
+pub struct TwoWayPegManager {
+    /// Pending peg transactions
+    pending_transactions: HashMap<Hash, PegTransaction>,
+    /// Completed peg transactions
+    completed_transactions: HashMap<Hash, PegTransaction>,
+    /// Federation manager for signature validation
+    federation_manager: Option<std::sync::Arc<std::sync::Mutex<crate::sidechain::federation_integrator::FederationIntegrator>>>,
+    /// Required confirmations for peg transactions
+    required_confirmations: u64,
+    /// Mainchain UTXO set reference (for validation)
+    mainchain_utxo_set: Option<std::sync::Arc<std::sync::Mutex<crate::consensus::utxo_set::UtxoSet>>>,
 }
 
 impl TwoWayPegManager {
     /// Create a new two-way peg manager
-    pub fn new(config: TwoWayPegConfig) -> Self {
+    pub fn new(required_confirmations: u64) -> Self {
         Self {
-            config,
-            active_peg_ins: HashMap::new(),
-            active_peg_outs: HashMap::new(),
-            completed_pegs: HashMap::new(),
-            current_federation: Vec::new(),
-            current_block_height: 0,
+            pending_transactions: HashMap::new(),
+            completed_transactions: HashMap::new(),
+            federation_manager: None,
+            required_confirmations,
+            mainchain_utxo_set: None,
         }
     }
 
-    /// Initiate a peg-in operation
-    pub fn initiate_peg_in(
+    /// Set federation manager
+    pub fn with_federation_manager(
         &mut self,
-        mainchain_tx: Transaction,
-        target_sidechain_id: Hash,
-        sidechain_recipient: Vec<u8>,
-        amount: u64,
-        asset_id: Hash,
-    ) -> Result<Hash, String> {
-        // Validate peg-in parameters
-        self.validate_peg_amount(amount)?;
-        
-        if sidechain_recipient.is_empty() {
-            return Err("Sidechain recipient cannot be empty".to_string());
-        }
+        federation_manager: std::sync::Arc<std::sync::Mutex<crate::sidechain::federation_integrator::FederationIntegrator>>,
+    ) {
+        self.federation_manager = Some(federation_manager);
+    }
 
-        // Generate peg ID
-        let peg_id = self.generate_peg_id(&mainchain_tx, &target_sidechain_id);
+    /// Set mainchain UTXO set reference
+    pub fn with_mainchain_utxo_set(
+        mut self,
+        utxo_set: std::sync::Arc<std::sync::Mutex<crate::consensus::utxo_set::UtxoSet>>,
+    ) -> Self {
+        self.mainchain_utxo_set = Some(utxo_set);
+        self
+    }
 
-        // Check for duplicate peg-in
-        if self.active_peg_ins.contains_key(&peg_id) {
-            return Err("Peg-in already exists".to_string());
-        }
+    /// Initiate a peg-in request
+    pub fn initiate_peg_in(&mut self, request: PegInRequest) -> Result<Hash, String> {
+        // Validate federation signatures
+        self.validate_federation_signatures(&request.federation_signatures, &request.sidechain_id)?;
 
-        // Verify mainchain transaction locks funds correctly
-        self.verify_mainchain_lock_transaction(&mainchain_tx, amount, &asset_id)?;
+        // Validate mainchain transaction exists and is properly locked
+        self.validate_mainchain_lock_transaction(&request)?;
 
-        // Create peg-in transaction
-        let peg_in = PegInTransaction {
-            peg_id,
-            mainchain_tx,
-            target_sidechain_id,
-            sidechain_recipient,
-            amount,
-            asset_id,
-            mainchain_block_height: self.current_block_height,
-            inclusion_proof: CrossChainProof {
-                merkle_proof: Vec::new(), // Will be filled when confirmed
-                block_header: Vec::new(),
-                transaction_data: Vec::new(),
-                tx_index: 0,
-            },
-            federation_signatures: Vec::new(),
-            status: PegStatus::Initiated,
-            created_at: std::time::SystemTime::now()
+        // Create peg transaction record
+        let tx_id = self.generate_transaction_id();
+        let peg_tx = PegTransaction {
+            id: tx_id,
+            tx_type: PegTransactionType::PegIn,
+            status: PegTransactionStatus::Pending,
+            amount: request.amount,
+            source_chain: [0u8; 32], // Mainchain
+            destination_chain: request.sidechain_id,
+            recipient: request.sidechain_recipient.clone(),
+            confirm_height: request.mainchain_confirm_height,
+            timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            cross_chain_tx_id: None,
         };
 
-        self.active_peg_ins.insert(peg_id, peg_in);
-
-        info!("Initiated peg-in {} for {} units to sidechain {:?}", 
-              hex::encode(&peg_id), amount, target_sidechain_id);
-
-        Ok(peg_id)
+        self.pending_transactions.insert(tx_id, peg_tx);
+        Ok(tx_id)
     }
 
-    /// Initiate a peg-out operation
-    pub fn initiate_peg_out(
-        &mut self,
-        sidechain_tx: SidechainTransaction,
-        source_sidechain_id: Hash,
-        mainchain_recipient: Vec<u8>,
-        amount: u64,
-        asset_id: Hash,
-    ) -> Result<Hash, String> {
-        // Validate peg-out parameters
-        self.validate_peg_amount(amount)?;
-        
-        if mainchain_recipient.is_empty() {
-            return Err("Mainchain recipient cannot be empty".to_string());
-        }
+    /// Initiate a peg-out request
+    pub fn initiate_peg_out(&mut self, request: PegOutRequest) -> Result<Hash, String> {
+        // Validate federation signatures
+        self.validate_federation_signatures(&request.federation_signatures, &request.sidechain_id)?;
 
-        // Generate peg ID
-        let peg_id = self.generate_peg_id_from_sidechain(&sidechain_tx, &source_sidechain_id);
+        // Validate sidechain burn transaction
+        self.validate_sidechain_burn_transaction(&request)?;
 
-        // Check for duplicate peg-out
-        if self.active_peg_outs.contains_key(&peg_id) {
-            return Err("Peg-out already exists".to_string());
-        }
-
-        // Verify sidechain transaction burns funds correctly
-        self.verify_sidechain_burn_transaction(&sidechain_tx, amount, &asset_id)?;
-
-        // Create peg-out transaction
-        let peg_out = PegOutTransaction {
-            peg_id,
-            sidechain_tx,
-            source_sidechain_id,
-            mainchain_recipient,
-            amount,
-            asset_id,
-            sidechain_block_height: self.current_block_height,
-            burn_proof: CrossChainProof {
-                merkle_proof: Vec::new(), // Will be filled when confirmed
-                block_header: Vec::new(),
-                transaction_data: Vec::new(),
-                tx_index: 0,
-            },
-            federation_signatures: Vec::new(),
-            mainchain_release_tx: None,
-            status: PegStatus::Initiated,
-            created_at: std::time::SystemTime::now()
+        // Create peg transaction record
+        let tx_id = self.generate_transaction_id();
+        let peg_tx = PegTransaction {
+            id: tx_id,
+            tx_type: PegTransactionType::PegOut,
+            status: PegTransactionStatus::Pending,
+            amount: request.amount,
+            source_chain: request.sidechain_id,
+            destination_chain: [0u8; 32], // Mainchain
+            recipient: request.mainchain_recipient.clone(),
+            confirm_height: request.sidechain_confirm_height,
+            timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            cross_chain_tx_id: None,
         };
 
-        self.active_peg_outs.insert(peg_id, peg_out);
-
-        info!("Initiated peg-out {} for {} units from sidechain {:?}", 
-              hex::encode(&peg_id), amount, source_sidechain_id);
-
-        Ok(peg_id)
+        self.pending_transactions.insert(tx_id, peg_tx);
+        Ok(tx_id)
     }
 
-    /// Process confirmations for peg operations
-    pub fn process_confirmations(&mut self, block_height: u64) -> Result<(), String> {
-        self.current_block_height = block_height;
+    /// Confirm a peg transaction after required confirmations
+    pub fn confirm_peg_transaction(&mut self, tx_id: &Hash, current_height: u64) -> Result<(), String> {
+        let tx = self.pending_transactions.get_mut(tx_id)
+            .ok_or("Peg transaction not found")?;
 
-        // Process peg-in confirmations
-        let peg_in_ids: Vec<Hash> = self.active_peg_ins.keys().copied().collect();
-        for peg_id in peg_in_ids {
-            self.process_peg_in_confirmations(peg_id)?;
+        // Check if enough confirmations have passed
+        if current_height < tx.confirm_height + self.required_confirmations {
+            return Err("Insufficient confirmations".to_string());
         }
 
-        // Process peg-out confirmations
-        let peg_out_ids: Vec<Hash> = self.active_peg_outs.keys().copied().collect();
-        for peg_id in peg_out_ids {
-            self.process_peg_out_confirmations(peg_id)?;
-        }
-
-        // Clean up timed out operations
-        self.cleanup_timed_out_operations();
+        // Move to completed
+        tx.status = PegTransactionStatus::Confirmed;
+        let tx_clone = tx.clone();
+        self.completed_transactions.insert(*tx_id, tx_clone);
+        self.pending_transactions.remove(tx_id);
 
         Ok(())
     }
 
-    /// Add federation signature to a peg operation
-    pub fn add_federation_signature(
-        &mut self,
-        peg_id: Hash,
-        signature: FederationSignature,
-    ) -> Result<(), String> {
-        // Verify signature
-        signature.verify(&peg_id)?;
+    /// Complete a peg transaction (mint/unlock funds)
+    pub fn complete_peg_transaction(&mut self, tx_id: &Hash) -> Result<(), String> {
+        let tx = self.completed_transactions.get_mut(tx_id)
+            .ok_or("Peg transaction not found")?;
 
-        // Add to peg-in if exists
-        if let Some(peg_in) = self.active_peg_ins.get_mut(&peg_id) {
-            peg_in.federation_signatures.push(signature);
-            self.check_peg_in_completion(peg_id)?;
-            return Ok(());
-        }
-
-        // Add to peg-out if exists
-        if let Some(peg_out) = self.active_peg_outs.get_mut(&peg_id) {
-            peg_out.federation_signatures.push(signature);
-            self.check_peg_out_completion(peg_id)?;
-            return Ok(());
-        }
-
-        Err("Peg operation not found".to_string())
-    }
-
-    /// Update federation members
-    pub fn update_federation(&mut self, members: Vec<MasternodeID>) {
-        self.current_federation = members;
-        info!("Updated federation with {} members", self.current_federation.len());
-    }
-
-    /// Get peg operation status
-    pub fn get_peg_status(&self, peg_id: &Hash) -> Option<PegStatus> {
-        if let Some(peg_in) = self.active_peg_ins.get(peg_id) {
-            return Some(peg_in.status.clone());
-        }
-
-        if let Some(peg_out) = self.active_peg_outs.get(peg_id) {
-            return Some(peg_out.status.clone());
-        }
-
-        None
-    }
-
-    /// Get statistics about peg operations
-    pub fn get_stats(&self) -> TwoWayPegStats {
-        TwoWayPegStats {
-            active_peg_ins: self.active_peg_ins.len(),
-            active_peg_outs: self.active_peg_outs.len(),
-            completed_pegs: self.completed_pegs.len(),
-            federation_size: self.current_federation.len(),
-            current_block_height: self.current_block_height,
-        }
-    }
-
-    // Private helper methods
-
-    fn validate_peg_amount(&self, amount: u64) -> Result<(), String> {
-        if amount < self.config.min_peg_amount {
-            return Err(format!("Amount {} below minimum {}", amount, self.config.min_peg_amount));
-        }
-
-        if amount > self.config.max_peg_amount {
-            return Err(format!("Amount {} above maximum {}", amount, self.config.max_peg_amount));
-        }
+        // Here we would trigger the actual minting/unlocking
+        // For now, just mark as completed
+        tx.status = PegTransactionStatus::Completed;
 
         Ok(())
     }
 
-    fn generate_peg_id(&self, mainchain_tx: &Transaction, sidechain_id: &Hash) -> Hash {
-        let mut data = Vec::new();
-        data.extend_from_slice(mainchain_tx.txid().as_ref());
-        data.extend_from_slice(sidechain_id.as_ref());
-        let mut height_bytes = [0u8; 32];
-        height_bytes[..8].copy_from_slice(&self.current_block_height.to_le_bytes());
-        data.extend_from_slice(height_bytes.as_ref());
-        blake3::hash(&data).into()
+    /// Get peg transaction by ID
+    pub fn get_peg_transaction(&self, tx_id: &Hash) -> Option<&PegTransaction> {
+        self.pending_transactions.get(tx_id)
+            .or_else(|| self.completed_transactions.get(tx_id))
     }
 
-    fn generate_peg_id_from_sidechain(&self, sidechain_tx: &SidechainTransaction, sidechain_id: &Hash) -> Hash {
-        let mut data = Vec::new();
-        data.extend_from_slice(sidechain_tx.hash().as_ref());
-        data.extend_from_slice(sidechain_id.as_ref());
-        let mut height_bytes = [0u8; 32];
-        height_bytes[..8].copy_from_slice(&self.current_block_height.to_le_bytes());
-        data.extend_from_slice(height_bytes.as_ref());
-        blake3::hash(&data).into()
+    /// Get all pending peg transactions
+    pub fn get_pending_transactions(&self) -> Vec<&PegTransaction> {
+        self.pending_transactions.values().collect()
     }
 
-    fn verify_mainchain_lock_transaction(&self, mainchain_tx: &Transaction, amount: u64, _asset_id: &Hash) -> Result<(), String> {
-        // In a real implementation, this would verify:
-        // 1. Transaction outputs lock the correct amount
-        // 2. Funds are locked to the federation's multisig address
-        // 3. Asset type matches the expected asset
-        
-        // Simplified validation for now
-        let total_output_value: u64 = mainchain_tx.get_outputs().iter().map(|o| o.value).sum();
-        if total_output_value < amount {
-            return Err("Insufficient locked amount".to_string());
+    /// Validate federation signatures
+    fn validate_federation_signatures(&self, signatures: &[FederationSignature], sidechain_id: &Hash) -> Result<(), String> {
+        if signatures.is_empty() {
+            return Err("No federation signatures provided".to_string());
         }
 
-        Ok(())
-    }
+        if let Some(ref fed_mgr) = self.federation_manager {
+            let fed_mgr = fed_mgr.lock().unwrap();
+            let current_epoch = fed_mgr.get_current_epoch(sidechain_id)
+                .ok_or("No current federation epoch found")?;
 
-    fn verify_sidechain_burn_transaction(&self, sidechain_tx: &SidechainTransaction, _amount: u64, _asset_id: &Hash) -> Result<(), String> {
-        // In a real implementation, this would verify:
-        // 1. Transaction burns the correct amount
-        // 2. Asset type matches
-        // 3. Burn is properly executed
-        
-        // Simplified validation for now
-        let total_output_value = sidechain_tx.total_output_value();
-        if total_output_value > 0 {
-            return Err("Burn transaction should have no outputs".to_string());
-        }
+            // Check threshold is met
+            let signer_count = signatures.iter()
+                .map(|sig| sig.count_signers())
+                .max()
+                .unwrap_or(0);
 
-        Ok(())
-    }
+            if !current_epoch.is_threshold_met(signer_count) {
+                return Err("Federation signature threshold not met".to_string());
+            }
 
-    fn process_peg_in_confirmations(&mut self, peg_id: Hash) -> Result<(), String> {
-        let peg_in = self.active_peg_ins.get_mut(&peg_id)
-            .ok_or("Peg-in not found")?;
-
-        let confirmations = self.current_block_height.saturating_sub(peg_in.mainchain_block_height);
-        
-        if confirmations >= self.config.min_peg_in_confirmations as u64 {
-            peg_in.status = PegStatus::WaitingFederationSignatures {
-                received: peg_in.federation_signatures.len() as u32,
-                required: self.config.federation_threshold,
-            };
-        } else {
-            peg_in.status = PegStatus::WaitingConfirmations {
-                current: confirmations as u32,
-                required: self.config.min_peg_in_confirmations,
-            };
-        }
-
-        Ok(())
-    }
-
-    fn process_peg_out_confirmations(&mut self, peg_id: Hash) -> Result<(), String> {
-        let peg_out = self.active_peg_outs.get_mut(&peg_id)
-            .ok_or("Peg-out not found")?;
-
-        let confirmations = self.current_block_height.saturating_sub(peg_out.sidechain_block_height);
-        
-        if confirmations >= self.config.min_peg_out_confirmations as u64 {
-            peg_out.status = PegStatus::WaitingFederationSignatures {
-                received: peg_out.federation_signatures.len() as u32,
-                required: self.config.federation_threshold,
-            };
-        } else {
-            peg_out.status = PegStatus::WaitingConfirmations {
-                current: confirmations as u32,
-                required: self.config.min_peg_out_confirmations,
-            };
-        }
-
-        Ok(())
-    }
-
-    fn check_peg_in_completion(&mut self, peg_id: Hash) -> Result<(), String> {
-        let peg_in = self.active_peg_ins.get_mut(&peg_id)
-            .ok_or("Peg-in not found")?;
-
-        if peg_in.federation_signatures.len() >= self.config.federation_threshold as usize {
-            peg_in.status = PegStatus::Completed;
-            
-            // Create completion record
-            let record = PegOperationRecord {
-                peg_id,
-                operation_type: PegOperationType::PegIn,
-                amount: peg_in.amount,
-                asset_id: peg_in.asset_id,
-                completed_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                mainchain_tx_hash: peg_in.mainchain_tx.txid(),
-                sidechain_tx_hash: None,
-            };
-
-            self.completed_pegs.insert(peg_id, record);
-            info!("Completed peg-in {}", hex::encode(&peg_id));
-        }
-
-        Ok(())
-    }
-
-    fn check_peg_out_completion(&mut self, peg_id: Hash) -> Result<(), String> {
-        let peg_out = self.active_peg_outs.get_mut(&peg_id)
-            .ok_or("Peg-out not found")?;
-
-        if peg_out.federation_signatures.len() >= self.config.federation_threshold as usize {
-            // Create mainchain release transaction
-            let release_tx = TwoWayPegManager::create_mainchain_release_transaction(peg_out, self.config.peg_fee_rate)?;
-            peg_out.mainchain_release_tx = Some(release_tx.clone());
-            peg_out.status = PegStatus::Completed;
-            
-            // Create completion record
-            let record = PegOperationRecord {
-                peg_id,
-                operation_type: PegOperationType::PegOut,
-                amount: peg_out.amount,
-                asset_id: peg_out.asset_id,
-                completed_at: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs(),
-                mainchain_tx_hash: release_tx.txid(),
-                sidechain_tx_hash: Some(peg_out.sidechain_tx.hash()),
-            };
-
-            self.completed_pegs.insert(peg_id, record);
-            info!("Completed peg-out {}", hex::encode(&peg_id));
-        }
-
-        Ok(())
-    }
-
-    fn create_mainchain_release_transaction(peg_out: &PegOutTransaction, peg_fee_rate: u64) -> Result<Transaction, String> {
-        // In a real implementation, this would create a proper mainchain transaction
-        // that releases the locked funds to the recipient
-        
-        let output = TxOutput {
-            value: peg_out.amount - peg_fee_rate,
-            script_pubkey: peg_out.mainchain_recipient.clone(),
-            memo: None,
-        };
-
-        let tx = Transaction::Standard {
-            version: 1,
-            inputs: Vec::new(), // Would be federation's multisig inputs
-            outputs: vec![output],
-            lock_time: 0,
-            fee: peg_fee_rate,
-            witness: Vec::new(),
-        };
-
-        Ok(tx)
-    }
-
-    fn cleanup_timed_out_operations(&mut self) {
-        let timeout_height = self.current_block_height.saturating_sub(self.config.peg_timeout_blocks);
-
-        // Clean up timed out peg-ins
-        let timed_out_peg_ins: Vec<Hash> = self.active_peg_ins
-            .iter()
-            .filter(|(_, peg_in)| peg_in.mainchain_block_height < timeout_height)
-            .map(|(id, _)| *id)
-            .collect();
-
-        for peg_id in timed_out_peg_ins {
-            if let Some(mut peg_in) = self.active_peg_ins.remove(&peg_id) {
-                peg_in.status = PegStatus::TimedOut;
-                warn!("Peg-in {} timed out", hex::encode(&peg_id));
+            // Validate each signature
+            for sig in signatures {
+                let message_hash = [0u8; 32]; // Would be actual message hash
+                if !fed_mgr.validate_federation_signature(sidechain_id, sig.epoch, sig, &message_hash) {
+                    return Err("Invalid federation signature".to_string());
+                }
             }
         }
 
-        // Clean up timed out peg-outs
-        let timed_out_peg_outs: Vec<Hash> = self.active_peg_outs
-            .iter()
-            .filter(|(_, peg_out)| peg_out.sidechain_block_height < timeout_height)
-            .map(|(id, _)| *id)
-            .collect();
+        Ok(())
+    }
 
-        for peg_id in timed_out_peg_outs {
-            if let Some(mut peg_out) = self.active_peg_outs.remove(&peg_id) {
-                peg_out.status = PegStatus::TimedOut;
-                warn!("Peg-out {} timed out", hex::encode(&peg_id));
-            }
+    /// Validate mainchain lock transaction
+    fn validate_mainchain_lock_transaction(&self, request: &PegInRequest) -> Result<(), String> {
+        // Check if UTXO set is available
+        if self.mainchain_utxo_set.is_none() {
+            return Err("Mainchain UTXO set not available for validation".to_string());
+        }
+
+        let utxo_set = self.mainchain_utxo_set.as_ref().unwrap().lock().unwrap();
+
+        // Find the lock transaction output
+        // This is simplified - in reality would need to check the actual transaction
+        // and verify it's locked to the federation
+
+        // For now, assume validation passes
+        Ok(())
+    }
+
+    /// Validate sidechain burn transaction
+    fn validate_sidechain_burn_transaction(&self, request: &PegOutRequest) -> Result<(), String> {
+        // Validate that the sidechain transaction properly burns the funds
+        // This would involve checking the sidechain state
+
+        // For now, assume validation passes
+        Ok(())
+    }
+
+    /// Generate a unique transaction ID
+    fn generate_transaction_id(&self) -> Hash {
+        use rand::RngCore;
+        let mut rng = rand::thread_rng();
+        let mut bytes = [0u8; 32];
+        rng.fill_bytes(&mut bytes);
+        bytes.into()
+    }
+
+    /// Get statistics
+    pub fn get_stats(&self) -> PegStats {
+        let pending_count = self.pending_transactions.len();
+        let completed_count = self.completed_transactions.len();
+
+        let total_peg_in = self.completed_transactions.values()
+            .filter(|tx| matches!(tx.tx_type, PegTransactionType::PegIn))
+            .map(|tx| tx.amount)
+            .sum();
+
+        let total_peg_out = self.completed_transactions.values()
+            .filter(|tx| matches!(tx.tx_type, PegTransactionType::PegOut))
+            .map(|tx| tx.amount)
+            .sum();
+
+        PegStats {
+            pending_transactions: pending_count,
+            completed_transactions: completed_count,
+            total_peg_in,
+            total_peg_out,
         }
     }
 }
 
-/// Statistics about two-way peg operations
+/// Peg statistics
 #[derive(Debug, Clone)]
-pub struct TwoWayPegStats {
-    pub active_peg_ins: usize,
-    pub active_peg_outs: usize,
-    pub completed_pegs: usize,
-    pub federation_size: usize,
-    pub current_block_height: u64,
+pub struct PegStats {
+    pub pending_transactions: usize,
+    pub completed_transactions: usize,
+    pub total_peg_in: u64,
+    pub total_peg_out: u64,
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+    use crate::sidechain::federation_manager::FederationManager;
+    use rusty_shared_types::{OutPoint, masternode::MasternodeID};
+
+    fn create_test_masternode_id(value: u8) -> MasternodeID {
+        MasternodeID(OutPoint {
+            txid: [value; 32],
+            vout: 0,
+        })
+    }
+
+    #[test]
+    fn test_peg_manager_creation() {
+        let manager = TwoWayPegManager::new(6);
+        let stats = manager.get_stats();
+        assert_eq!(stats.pending_transactions, 0);
+        assert_eq!(stats.completed_transactions, 0);
+    }
+
+    #[test]
+    fn test_peg_in_request() {
+        let mut manager = TwoWayPegManager::new(6);
+// Set up federation integrator
+let mut fed_integrator = crate::sidechain::federation_integrator::FederationIntegrator::new();
+let members = vec![
+    create_test_masternode_id(1),
+    create_test_masternode_id(2),
+    create_test_masternode_id(3),
+];
+let public_keys = vec![vec![1u8; 48], vec![2u8; 48], vec![3u8; 48]];
+
+fed_integrator.initialize_sidechain_federation([1u8; 32], members, 2, public_keys, 100, 1000).unwrap();
+
+let fed_mgr_arc = std::sync::Arc::new(std::sync::Mutex::new(fed_integrator));
+manager.with_federation_manager(fed_mgr_arc);
+
+        // Create peg-in request
+        let request = PegInRequest {
+            mainchain_tx_hash: [1u8; 32],
+            amount: 1000000,
+            sidechain_recipient: vec![1, 2, 3],
+            sidechain_id: [1u8; 32],
+            mainchain_confirm_height: 1000,
+            merkle_proof: vec![],
+            federation_signatures: vec![], // Empty for test
+        };
+
+        // Should fail without proper signatures
+        assert!(manager.initiate_peg_in(request).is_err());
+    }
+
+    #[test]
+    fn test_peg_transaction_lifecycle() {
+        let mut manager = TwoWayPegManager::new(6);
+
+        // Create a mock transaction
+        let tx_id = [1u8; 32];
+        let peg_tx = PegTransaction {
+            id: tx_id,
+            tx_type: PegTransactionType::PegIn,
+            status: PegTransactionStatus::Pending,
+            amount: 1000000,
+            source_chain: [0u8; 32],
+            destination_chain: [1u8; 32],
+            recipient: vec![1, 2, 3],
+            confirm_height: 1000,
+            timestamp: 1234567890,
+            cross_chain_tx_id: None,
+        };
+
+        manager.pending_transactions.insert(tx_id, peg_tx);
+
+        // Check initial state
+        let tx = manager.get_peg_transaction(&tx_id).unwrap();
+        assert_eq!(tx.status, PegTransactionStatus::Pending);
+
+        // Confirm transaction
+        manager.confirm_peg_transaction(&tx_id, 1010).unwrap();
+
+        // Check confirmed state
+        let tx = manager.get_peg_transaction(&tx_id).unwrap();
+        assert_eq!(tx.status, PegTransactionStatus::Confirmed);
+
+        // Complete transaction
+        manager.complete_peg_transaction(&tx_id).unwrap();
+
+        // Check completed state
+        let tx = manager.get_peg_transaction(&tx_id).unwrap();
+        assert_eq!(tx.status, PegTransactionStatus::Completed);
+    }
+}

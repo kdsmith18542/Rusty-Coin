@@ -24,8 +24,8 @@ impl From<RpcError> for JsonRpcError {
             RpcError::BlockNotFound => JsonRpcError::new(ErrorCode::ServerError(1000)),
             RpcError::TransactionNotFound => JsonRpcError::new(ErrorCode::ServerError(1001)),
             RpcError::InvalidParameter(msg) => JsonRpcError::invalid_params(msg),
-            RpcError::Validation(msg) => JsonRpcError::new(ErrorCode::ServerError(1002)).add_data(json!({ "details": msg })),
-            RpcError::Internal(msg) => JsonRpcError::internal_error().add_data(json!({ "details": msg })),
+            RpcError::Validation(_msg) => JsonRpcError::new(ErrorCode::ServerError(1002)),
+            RpcError::Internal(_msg) => JsonRpcError::internal_error(),
             RpcError::MethodNotImplemented => JsonRpcError::method_not_found(),
         }
     }
@@ -43,13 +43,16 @@ impl From<hex::FromHexError> for RpcError {
     }
 }
 
-impl From<rusty_core::BlockchainError> for RpcError {
-    fn from(err: rusty_core::BlockchainError) -> Self {
+impl From<rusty_core::consensus::error::ConsensusError> for RpcError {
+    fn from(err: rusty_core::consensus::error::ConsensusError) -> Self {
         match err {
-            rusty_core::BlockchainError::BlockNotFound => RpcError::BlockNotFound,
-            rusty_core::BlockchainError::TransactionNotFound => RpcError::TransactionNotFound,
-            rusty_core::BlockchainError::ValidationError(msg) => RpcError::Validation(msg),
-            _ => RpcError::Internal(format!("Blockchain error: {}", err)),
+            rusty_core::consensus::error::ConsensusError::BlockValidation(msg) => {
+                RpcError::Validation(msg)
+            }
+            rusty_core::consensus::error::ConsensusError::TransactionValidation(msg) => {
+                RpcError::Validation(msg)
+            }
+            _ => RpcError::Internal(format!("Consensus error: {}", err)),
         }
     }
 }

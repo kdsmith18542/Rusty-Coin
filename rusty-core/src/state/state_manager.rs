@@ -1,23 +1,21 @@
 //! Comprehensive state manager for Rusty Coin
-//! 
+//!
 //! This module provides a unified interface for all state management
 //! operations including Merkle Patricia Trie, snapshots, proofs, and fast sync.
 
+use log::info;
 use std::collections::HashMap;
-use std::path::PathBuf;
-use log::{info, warn, error, debug};
 
-use rusty_shared_types::{Hash, OutPoint, Utxo, TicketId, BlockHeader};
 use crate::consensus::error::ConsensusError;
-use crate::consensus::utxo_set::UtxoSet;
-use crate::consensus::pos::LiveTicketsPool;
 use crate::consensus::governance_state::ActiveProposals;
+use crate::consensus::pos::LiveTicketsPool;
+use crate::consensus::utxo_set::UtxoSet;
 use crate::state::{
-    MerklePatriciaTrie, TicketData,
-    StateProofManager, ProofConfig, ProofResponse, LightClientProofInterface,
-    SnapshotManager, SnapshotConfig, StateSnapshot, SnapshotStats,
-    FastSyncCoordinator, FastSyncConfig, FastSyncStatus, FastSyncStats,
+    FastSyncConfig, FastSyncCoordinator, FastSyncStats, FastSyncStatus, LightClientProofInterface,
+    MerklePatriciaTrie, ProofConfig, ProofResponse, SnapshotConfig, SnapshotManager, SnapshotStats,
+    StateProofManager, StateSnapshot, TicketData,
 };
+use rusty_shared_types::{Hash, OutPoint, TicketId, Utxo};
 
 /// Configuration for the comprehensive state manager
 #[derive(Debug, Clone)]
@@ -71,13 +69,13 @@ impl StateManager {
     pub fn new(config: StateManagerConfig) -> Result<Self, ConsensusError> {
         // Initialize Merkle Patricia Trie
         let trie = MerklePatriciaTrie::new();
-        
+
         // Initialize proof manager
         let proof_manager = StateProofManager::new(config.proof_config.clone(), trie.clone());
-        
+
         // Initialize snapshot manager
         let snapshot_manager = SnapshotManager::new(config.snapshot_config.clone())?;
-        
+
         // Initialize fast sync coordinator if enabled
         let fast_sync_coordinator = if config.enable_fast_sync {
             Some(FastSyncCoordinator::new(
@@ -113,11 +111,14 @@ impl StateManager {
         info!("Updating state for block height {}", block_height);
 
         // Convert data structures for trie
-        let utxo_map: HashMap<OutPoint, Utxo> = utxo_set.iter()
+        let utxo_map: HashMap<OutPoint, Utxo> = utxo_set
+            .iter()
             .map(|(outpoint, utxo)| (outpoint.clone(), utxo.clone()))
             .collect();
 
-        let ticket_map: HashMap<TicketId, TicketData> = live_tickets.tickets.iter()
+        let ticket_map: HashMap<TicketId, TicketData> = live_tickets
+            .tickets
+            .iter()
             .map(|(ticket_id, ticket)| {
                 let ticket_data = TicketData {
                     owner: ticket.pubkey.clone(),
@@ -129,7 +130,9 @@ impl StateManager {
             })
             .collect();
 
-        let proposal_map: HashMap<Vec<u8>, Vec<u8>> = active_proposals.proposals.iter()
+        let proposal_map: HashMap<Vec<u8>, Vec<u8>> = active_proposals
+            .proposals
+            .iter()
             .map(|(proposal_id, proposal)| {
                 let key = format!("prop_{}", hex::encode(proposal_id)).into_bytes();
                 let value = bincode::serialize(proposal).unwrap_or_default();
@@ -150,12 +153,20 @@ impl StateManager {
         self.current_state_root = self.trie.root_hash();
 
         // Update proof manager with new trie
-        self.proof_manager = StateProofManager::new(self.config.proof_config.clone(), self.trie.clone());
+        self.proof_manager =
+            StateProofManager::new(self.config.proof_config.clone(), self.trie.clone());
 
         // Create snapshot if needed
-        if self.config.enable_auto_snapshots && 
-           self.snapshot_manager.should_create_snapshot(block_height) {
-            self.create_snapshot(block_hash, utxo_set, live_tickets, masternode_list, active_proposals)?;
+        if self.config.enable_auto_snapshots
+            && self.snapshot_manager.should_create_snapshot(block_height)
+        {
+            self.create_snapshot(
+                block_hash,
+                utxo_set,
+                live_tickets,
+                masternode_list,
+                active_proposals,
+            )?;
         }
 
         Ok(self.current_state_root)
@@ -184,11 +195,14 @@ impl StateManager {
     }
 
     /// Rollback to a previous state
-    pub fn rollback_to_height(&mut self, target_height: u64) -> Result<StateSnapshot, ConsensusError> {
+    pub fn rollback_to_height(
+        &mut self,
+        target_height: u64,
+    ) -> Result<StateSnapshot, ConsensusError> {
         info!("Rolling back state to height {}", target_height);
-        
+
         let snapshot = self.snapshot_manager.rollback_to_height(target_height)?;
-        
+
         // Reconstruct trie from snapshot
         self.trie = MerklePatriciaTrie::from_state_data(
             &snapshot.utxo_set,
@@ -202,7 +216,8 @@ impl StateManager {
         self.current_state_root = snapshot.metadata.state_root;
 
         // Update proof manager
-        self.proof_manager = StateProofManager::new(self.config.proof_config.clone(), self.trie.clone());
+        self.proof_manager =
+            StateProofManager::new(self.config.proof_config.clone(), self.trie.clone());
 
         Ok(snapshot)
     }
@@ -213,7 +228,9 @@ impl StateManager {
         network_height: u64,
     ) -> Result<bool, ConsensusError> {
         if let Some(ref mut coordinator) = self.fast_sync_coordinator {
-            coordinator.maybe_start_fast_sync(self.current_height, network_height).await
+            coordinator
+                .maybe_start_fast_sync(self.current_height, network_height)
+                .await
         } else {
             Ok(false)
         }
@@ -233,7 +250,9 @@ impl StateManager {
     pub fn get_stats(&self) -> StateManagerStats {
         let proof_stats = self.proof_manager.get_proof_stats();
         let snapshot_stats = self.snapshot_manager.get_stats();
-        let fast_sync_stats = self.fast_sync_coordinator.as_ref()
+        let fast_sync_stats = self
+            .fast_sync_coordinator
+            .as_ref()
             .map(|c| c.get_stats())
             .unwrap_or_else(|| FastSyncStats {
                 status: FastSyncStatus::NotStarted,
@@ -255,27 +274,42 @@ impl StateManager {
     }
 
     /// Generate a UTXO proof
-    pub fn generate_utxo_proof(&self, outpoint: &OutPoint) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_utxo_proof(
+        &self,
+        outpoint: &OutPoint,
+    ) -> Result<ProofResponse, ConsensusError> {
         self.proof_manager.generate_utxo_proof(outpoint)
     }
 
     /// Generate a batch UTXO proof
-    pub fn generate_utxo_batch_proof(&self, outpoints: &[OutPoint]) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_utxo_batch_proof(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.proof_manager.generate_utxo_batch_proof(outpoints)
     }
 
     /// Generate a ticket proof
-    pub fn generate_ticket_proof(&self, ticket_id: &TicketId) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_ticket_proof(
+        &self,
+        ticket_id: &TicketId,
+    ) -> Result<ProofResponse, ConsensusError> {
         self.proof_manager.generate_ticket_proof(ticket_id)
     }
 
     /// Generate a masternode proof
-    pub fn generate_masternode_proof(&self, masternode_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_masternode_proof(
+        &self,
+        masternode_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.proof_manager.generate_masternode_proof(masternode_key)
     }
 
     /// Generate a governance proof
-    pub fn generate_governance_proof(&self, proposal_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_governance_proof(
+        &self,
+        proposal_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.proof_manager.generate_governance_proof(proposal_key)
     }
 
@@ -291,13 +325,19 @@ impl StateManager {
 
     /// Get fast sync status
     pub fn get_fast_sync_status(&self) -> FastSyncStatus {
-        self.fast_sync_coordinator.as_ref()
+        self.fast_sync_coordinator
+            .as_ref()
             .map(|c| c.get_status())
             .unwrap_or(FastSyncStatus::NotStarted)
     }
 
     /// Add peer snapshot information for fast sync
-    pub fn add_peer_snapshot(&mut self, peer_id: String, metadata: crate::state::SnapshotMetadata, peer_height: u64) {
+    pub fn add_peer_snapshot(
+        &mut self,
+        peer_id: String,
+        metadata: crate::state::SnapshotMetadata,
+        peer_height: u64,
+    ) {
         if let Some(ref mut coordinator) = self.fast_sync_coordinator {
             coordinator.add_peer_snapshot(peer_id, metadata, peer_height);
         }
@@ -348,7 +388,8 @@ impl StateManager {
             &snapshot.masternode_list,
             &snapshot.active_proposals,
         )?;
-        self.proof_manager = StateProofManager::new(self.config.proof_config.clone(), self.trie.clone());
+        self.proof_manager =
+            StateProofManager::new(self.config.proof_config.clone(), self.trie.clone());
         Ok(())
     }
 }
@@ -358,20 +399,29 @@ impl LightClientProofInterface for StateManager {
     fn request_utxo_proof(&self, outpoint: &OutPoint) -> Result<ProofResponse, ConsensusError> {
         self.generate_utxo_proof(outpoint)
     }
-    
-    fn request_utxo_batch_proof(&self, outpoints: &[OutPoint]) -> Result<ProofResponse, ConsensusError> {
+
+    fn request_utxo_batch_proof(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.generate_utxo_batch_proof(outpoints)
     }
-    
+
     fn request_ticket_proof(&self, ticket_id: &TicketId) -> Result<ProofResponse, ConsensusError> {
         self.generate_ticket_proof(ticket_id)
     }
-    
-    fn request_masternode_proof(&self, masternode_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+
+    fn request_masternode_proof(
+        &self,
+        masternode_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.generate_masternode_proof(masternode_key)
     }
-    
-    fn request_governance_proof(&self, proposal_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+
+    fn request_governance_proof(
+        &self,
+        proposal_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.generate_governance_proof(proposal_key)
     }
 }

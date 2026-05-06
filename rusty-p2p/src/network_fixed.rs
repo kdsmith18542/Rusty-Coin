@@ -56,23 +56,54 @@ impl RequestResponseCodec for BlockSyncCodec {
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // Simplified implementation
-        Err(std::io::Error::new(std::io::ErrorKind::Other, "Not implemented"))
+        // Read request length (4 bytes)
+        let mut length_bytes = [0u8; 4];
+        io.read_exact(&mut length_bytes).await?;
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        
+        // Read request data
+        let mut data = vec![0u8; length];
+        io.read_exact(&mut data).await?;
+        
+        // Deserialize the request
+        bincode::deserialize(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     async fn read_response<T>(&mut self, _: &Self::Protocol, io: &mut T) -> Result<Self::Response, std::io::Error>
     where
         T: futures::AsyncRead + Unpin + Send,
     {
-        // Simplified implementation
-        Err(std::io::Error::new(std::io::ErrorKind::Other, "Not implemented"))
+        // Read response length (4 bytes)
+        let mut length_bytes = [0u8; 4];
+        io.read_exact(&mut length_bytes).await?;
+        let length = u32::from_be_bytes(length_bytes) as usize;
+        
+        // Read response data
+        let mut data = vec![0u8; length];
+        io.read_exact(&mut data).await?;
+        
+        // Deserialize the response
+        bincode::deserialize(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     async fn write_request<T>(&mut self, _: &Self::Protocol, io: &mut T, req: Self::Request) -> Result<(), std::io::Error>
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        // Simplified implementation
+        // Serialize the request
+        let data = bincode::serialize(&req)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        
+        // Write length (4 bytes)
+        let length = data.len() as u32;
+        io.write_all(&length.to_be_bytes()).await?;
+        
+        // Write request data
+        io.write_all(&data).await?;
+        io.flush().await?;
+        
         Ok(())
     }
 
@@ -80,7 +111,18 @@ impl RequestResponseCodec for BlockSyncCodec {
     where
         T: futures::AsyncWrite + Unpin + Send,
     {
-        // Simplified implementation
+        // Serialize the response
+        let data = bincode::serialize(&res)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        
+        // Write length (4 bytes)
+        let length = data.len() as u32;
+        io.write_all(&length.to_be_bytes()).await?;
+        
+        // Write response data
+        io.write_all(&data).await?;
+        io.flush().await?;
+        
         Ok(())
     }
 }

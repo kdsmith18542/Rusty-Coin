@@ -25,6 +25,7 @@ signature = { version = "2.2.0", features = ["std"] }
 rusty-types = { path = "../rusty-types" }
 rusty-crypto = { path = "../rusty-crypto" }
 rusty-shared-types = { path = "../rusty-shared-types" }
+rusty-core = { path = "../rusty-core" }
 zerocopy = { version = "0.8.26", features = ["derive"] }
 
 [dependencies.rocksdb]

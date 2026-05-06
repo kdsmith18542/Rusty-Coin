@@ -1,4 +1,6 @@
-use rusty_shared_types::{TxInput, TxOutput, Transaction, UtxoId, Utxo, StandardTransaction, OutPoint};
+use rusty_shared_types::{
+    OutPoint, StandardTransaction, Transaction, TxInput, TxOutput, Utxo, UtxoId,
+};
 use std::collections::HashMap;
 use std::fmt;
 
@@ -44,12 +46,12 @@ pub fn select_utxos(
     sorted_utxos.sort_by_key(|(_, utxo)| utxo.output.value);
 
     for (utxo_id, utxo) in sorted_utxos {
-        selected_inputs.push(TxInput {
-            previous_output: utxo_id.0.clone(),
-            script_sig: Vec::new(), // To be filled by signing
-            sequence: 0xFFFFFFFF,
-            witness: vec![],
-        });
+        selected_inputs.push(TxInput::from_outpoint(
+            utxo_id.0.clone(),
+            Vec::new(), // To be filled by signing
+            0xFFFFFFFF,
+            vec![],
+        ));
         current_value += utxo.output.value;
 
         // Rough fee estimation: base fee + inputs * 100 + outputs * 100 bytes
@@ -86,7 +88,7 @@ impl TransactionBuilder {
             Transaction::Standard { inputs, .. } => inputs.len(),
             Transaction::TicketPurchase { inputs, .. } => inputs.len(),
             Transaction::TicketRedemption { inputs, .. } => inputs.len(),
-            _ => 0
+            _ => 0,
         }
     }
 
@@ -95,7 +97,7 @@ impl TransactionBuilder {
             Transaction::Standard { outputs, .. } => outputs.len(),
             Transaction::TicketPurchase { outputs, .. } => outputs.len(),
             Transaction::TicketRedemption { outputs, .. } => outputs.len(),
-            _ => 0
+            _ => 0,
         }
     }
 
@@ -103,7 +105,7 @@ impl TransactionBuilder {
         &self,
         selected_inputs: Vec<TxInput>,
         outputs: Vec<TxOutput>,
-        fee: u64
+        fee: u64,
     ) -> Result<Transaction, TransactionBuilderError> {
         Ok(Transaction::Standard {
             version: 1,
@@ -120,7 +122,7 @@ impl TransactionBuilder {
         tx: StandardTransaction,
         ticket_id: [u8; 32],
         locked_amount: u64,
-        ticket_address: Vec<u8>
+        ticket_address: Vec<u8>,
     ) -> Transaction {
         Transaction::TicketPurchase {
             version: tx.version,
@@ -138,7 +140,7 @@ impl TransactionBuilder {
     pub fn build_ticket_redemption_transaction(
         &self,
         tx: StandardTransaction,
-        ticket_id: [u8; 32]
+        ticket_id: [u8; 32],
     ) -> Transaction {
         Transaction::TicketRedemption {
             version: tx.version,
@@ -158,12 +160,15 @@ pub fn create_coinbase_transaction(
     block_height: u64,
     block_reward: u64,
 ) -> Transaction {
-    let coinbase_input = TxInput {
-        previous_output: OutPoint { txid: [0u8; 32], vout: 0xFFFFFFFF }, // Null hash for coinbase
-        script_sig: block_height.to_le_bytes().to_vec(), // Block height in script_sig
-        sequence: 0xFFFFFFFF,
-        witness: vec![],
-    };
+    let coinbase_input = TxInput::from_outpoint(
+        OutPoint {
+            txid: [0u8; 32],
+            vout: 0xFFFFFFFF,
+        }, // Null hash for coinbase
+        block_height.to_le_bytes().to_vec(), // Block height in script_sig
+        0xFFFFFFFF,
+        vec![],
+    );
 
     let coinbase_output = TxOutput {
         value: block_reward,

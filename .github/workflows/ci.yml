@@ -1,0 +1,390 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      deploy_testnet:
+        description: 'Deploy to testnet'
+        required: false
+        default: 'false'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Build and cache dependencies
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-target-
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Check clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Build workspace
+      run: cargo build --workspace --release
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: rusty-coin-binaries
+        path: target/release/
+        retention-days: 7
+
+  # Unit tests
+  unit-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        crate: [rusty-core, rusty-consensus, rusty-crypto, rusty-governance, rusty-masternode, rusty-network, rusty-node, rusty-p2p, rusty-rpc, rusty-shared-types, rusty-types, rusty-wallet]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run unit tests for ${{ matrix.crate }}
+      run: cargo test --lib --package ${{ matrix.crate }}
+
+  # Integration tests
+  integration-tests:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Run integration tests
+      run: cargo test --test integration_tests
+
+  # Regtest E2E tests
+  regtest-e2e:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install jq
+      run: sudo apt-get update && sudo apt-get install -y jq
+
+    - name: Build for regtest
+      run: cargo build --release --bin rusty-node
+
+    - name: Run regtest E2E tests
+      run: ./scripts/setup_regtest_network.sh test
+
+  # Performance benchmarks
+  benchmarks:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-criterion
+      run: cargo install cargo-criterion
+
+    - name: Run benchmarks
+      run: cargo criterion --message-format=json > benchmark_results.json
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: benchmark_results.json
+        retention-days: 30
+
+    - name: Check for performance regressions
+      run: |
+        # Compare against baseline (would need to store baseline separately)
+        echo "Performance benchmarks completed"
+
+  # Security fuzzing
+  fuzzing:
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      matrix:
+        fuzz_target: [
+          fuzz_block_parsing,
+          fuzz_consensus_validation,
+          fuzz_cross_chain_tx,
+          fuzz_ferrisscript,
+          fuzz_fraud_proofs,
+          fuzz_governance_proposals,
+          fuzz_merkle_proofs,
+          fuzz_sidechain_validation,
+          fuzz_transaction_parsing
+        ]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@nightly
+
+    - name: Install cargo-fuzz
+      run: cargo install cargo-fuzz
+
+    - name: Run fuzz test for ${{ matrix.fuzz_target }}
+      run: |
+        cd rusty-core
+        cargo fuzz run ${{ matrix.fuzz_target }} -- -max_total_time=30
+
+  # Code coverage
+  coverage:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-tarpaulin
+      run: cargo install cargo-tarpaulin
+
+    - name: Generate coverage report
+      run: cargo tarpaulin --workspace --out Xml --output-dir coverage
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: coverage/cobertura.xml
+        fail_ci_if_error: true
+
+    - name: Check coverage threshold
+      run: |
+        COVERAGE=$(cargo tarpaulin --workspace --out Json | jq -r '.coverage')
+        THRESHOLD=80.0
+        if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+          echo "Coverage $COVERAGE% is below threshold $THRESHOLD%"
+          exit 1
+        else
+          echo "Coverage $COVERAGE% meets threshold $THRESHOLD%"
+        fi
+
+  # Security audit
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ runner.os }}-cargo-audit-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: cargo audit --format json | tee audit_results.json
+
+    - name: Check for critical vulnerabilities
+      run: |
+        CRITICAL=$(cat audit_results.json | jq '.vulnerabilities.critical | length')
+        if [ "$CRITICAL" -gt 0 ]; then
+          echo "Found $CRITICAL critical vulnerabilities"
+          exit 1
+        fi
+
+  # Quality gate check
+  quality-gate:
+    runs-on: ubuntu-latest
+    needs: [unit-tests, integration-tests, regtest-e2e, benchmarks, fuzzing, coverage, security-audit]
+    if: always()
+    steps:
+    - name: Check all jobs passed
+      run: |
+        if [[ "${{ needs.unit-tests.result }}" != "success" ]]; then
+          echo "Unit tests failed"
+          exit 1
+        fi
+        if [[ "${{ needs.integration-tests.result }}" != "success" ]]; then
+          echo "Integration tests failed"
+          exit 1
+        fi
+        if [[ "${{ needs.regtest-e2e.result }}" != "success" ]]; then
+          echo "Regtest E2E tests failed"
+          exit 1
+        fi
+        if [[ "${{ needs.benchmarks.result }}" != "success" ]]; then
+          echo "Benchmarks failed"
+          exit 1
+        fi
+        if [[ "${{ needs.fuzzing.result }}" != "success" ]]; then
+          echo "Fuzzing failed"
+          exit 1
+        fi
+        if [[ "${{ needs.coverage.result }}" != "success" ]]; then
+          echo "Coverage check failed"
+          exit 1
+        fi
+        if [[ "${{ needs.security-audit.result }}" != "success" ]]; then
+          echo "Security audit failed"
+          exit 1
+        fi
+        echo "All quality gates passed!"
+
+  # Manual testnet deployment
+  deploy-testnet:
+    runs-on: ubuntu-latest
+    needs: quality-gate
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_testnet == 'true'
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install jq
+      run: sudo apt-get update && sudo apt-get install -y jq
+
+    - name: Build for testnet
+      run: cargo build --release --bin rusty-node
+
+    - name: Deploy testnet
+      run: ./scripts/deploy_testnet.sh deploy
+
+    - name: Setup monitoring
+      run: |
+        # Start monitoring in background
+        nohup ./scripts/monitor_testnet.sh &
+        echo $! > monitor.pid
+
+    - name: Wait for testnet stabilization
+      run: sleep 300
+
+    - name: Verify testnet health
+      run: |
+        # Run health checks
+        if ./scripts/deploy_testnet.sh status | grep -q "STOPPED"; then
+          echo "Testnet deployment failed"
+          exit 1
+        fi
+
+    - name: Create deployment summary
+      run: |
+        echo "## Testnet Deployment Summary" >> deployment_summary.md
+        echo "- **Commit:** ${{ github.sha }}" >> deployment_summary.md
+        echo "- **Timestamp:** $(date)" >> deployment_summary.md
+        echo "- **Status:** ✅ Deployed successfully" >> deployment_summary.md
+        echo "- **Monitoring:** Active" >> deployment_summary.md
+
+    - name: Upload deployment summary
+      uses: actions/upload-artifact@v4
+      with:
+        name: testnet-deployment-summary
+        path: deployment_summary.md
+        retention-days: 30
+
+    - name: Notify deployment success
+      run: |
+        echo "Testnet deployment completed successfully!"
+        echo "Access testnet at configured endpoints"

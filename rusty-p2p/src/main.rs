@@ -1,6 +1,6 @@
-use rusty_p2p::{P2PNetwork, RustyCoinNetworkConfig};
 use env_logger::{Builder, Target};
 use log::LevelFilter;
+use rusty_p2p::{P2PNetwork, RustyCoinNetworkConfig};
 use std::time::Duration;
 
 #[tokio::main]
@@ -27,10 +27,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         enable_tx_relay: true,
         enable_block_relay: true,
         listen_port: 30333,
+        max_messages_per_peer_per_second: 100,
+        max_bytes_per_peer_per_second: 1024 * 1024, // 1MB per second
+        rate_limit_window_duration: Duration::from_secs(1),
     };
 
     let network = P2PNetwork::new(config).await?;
-    network.run().await?;
+    network.run()?;
 
     Ok(())
 }

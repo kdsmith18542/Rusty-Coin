@@ -269,8 +269,8 @@ fn test_block_merkle_validation(data: &[u8]) {
         if chunk.len() >= 64 {
             let tx = Transaction::Standard(StandardTransaction {
                 version: 1,
-                inputs: vec![TxInput {
-                    previous_output: OutPoint {
+                inputs: vec![TxInput::from_outpoint(
+    OutPoint {
                         txid: {
                             let mut txid = [0u8; 32];
                             txid.copy_from_slice(&chunk[0..32]);
@@ -278,10 +278,10 @@ fn test_block_merkle_validation(data: &[u8]) {
                         },
                         vout: u32::from_le_bytes([chunk[32], chunk[33], chunk[34], chunk[35]]),
                     },
-                    script_sig: chunk[36..60].to_vec(),
-                    sequence: u32::from_le_bytes([chunk[56], chunk[57], chunk[58], chunk[59]]),
-                    witness: vec![],
-                }],
+    chunk[36..60].to_vec(),
+    u32::from_le_bytes([chunk[56], chunk[57], chunk[58], chunk[59]]),
+    vec![],
+)],
                 outputs: vec![TxOutput {
                     value: u64::from_le_bytes([
                         chunk[60], chunk[61], chunk[62], chunk[63],

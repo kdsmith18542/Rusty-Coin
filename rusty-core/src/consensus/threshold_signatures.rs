@@ -1,20 +1,19 @@
 //! Threshold signature coordination for masternode consensus
-//! 
+//!
 //! This module integrates DKG with the masternode network to provide
 //! threshold signatures for consensus operations.
 
+use log::{info, warn};
 use std::collections::HashMap;
 use std::time::Instant;
-use log::{info, warn};
 
-
-use rusty_shared_types::{Hash, MasternodeID};
-use rusty_shared_types::dkg::{
-    DKGSessionID, DKGParticipant, DKGParams,
-    ThresholdSignature, SignatureShare as DKGSignatureShare
-};
-use rusty_crypto::{DKGManager, DKGManagerConfig};
 use crate::consensus::error::ConsensusError;
+use rusty_crypto::{DKGManager, DKGManagerConfig};
+use rusty_shared_types::dkg::{
+    DKGParams, DKGParticipant, DKGSessionID, SignatureShare as DKGSignatureShare,
+    ThresholdSignature,
+};
+use rusty_shared_types::{Hash, MasternodeID};
 
 /// Configuration for threshold signature operations
 #[derive(Debug, Clone)]
@@ -96,8 +95,12 @@ impl ThresholdSignatureCoordinator {
         participant_index: u32,
         auth_secret_key: ed25519_dalek::Keypair,
     ) -> Self {
-        let dkg_manager = DKGManager::new(config.dkg_config.clone(), participant_index, auth_secret_key);
-        
+        let dkg_manager = DKGManager::new(
+            config.dkg_config.clone(),
+            participant_index,
+            auth_secret_key,
+        );
+
         Self {
             config,
             dkg_manager,
@@ -109,16 +112,19 @@ impl ThresholdSignatureCoordinator {
     }
 
     /// Update the masternode list and potentially start new DKG
-    pub fn update_masternode_list(&mut self, masternodes: Vec<MasternodeID>) -> Result<(), ConsensusError> {
+    pub fn update_masternode_list(
+        &mut self,
+        masternodes: Vec<MasternodeID>,
+    ) -> Result<(), ConsensusError> {
         if masternodes.len() < self.config.min_masternode_count as usize {
             return Err(ConsensusError::ThresholdSignatureError(
-                "Insufficient masternodes for threshold signatures".to_string()
+                "Insufficient masternodes for threshold signatures".to_string(),
             ));
         }
 
         // Check if masternode set has changed significantly
         let needs_new_dkg = self.should_start_new_dkg(&masternodes);
-        
+
         self.current_masternodes = masternodes;
 
         if needs_new_dkg && self.config.enable_auto_dkg {
@@ -132,7 +138,7 @@ impl ThresholdSignatureCoordinator {
     pub fn start_new_dkg_session(&mut self) -> Result<DKGSessionID, ConsensusError> {
         if self.current_masternodes.len() < self.config.min_masternode_count as usize {
             return Err(ConsensusError::ThresholdSignatureError(
-                "Insufficient masternodes for DKG".to_string()
+                "Insufficient masternodes for DKG".to_string(),
             ));
         }
 
@@ -140,7 +146,8 @@ impl ThresholdSignatureCoordinator {
         let session_id = self.generate_dkg_session_id(self.current_block_height);
 
         // Convert masternodes to DKG participants
-        let participants: Vec<DKGParticipant> = self.current_masternodes
+        let participants: Vec<DKGParticipant> = self
+            .current_masternodes
             .iter()
             .enumerate()
             .map(|(index, masternode_id)| DKGParticipant {
@@ -151,7 +158,8 @@ impl ThresholdSignatureCoordinator {
             .collect();
 
         // Calculate threshold
-        let threshold = ((participants.len() as f64 * self.config.signature_threshold_ratio).ceil() as u32)
+        let threshold = ((participants.len() as f64 * self.config.signature_threshold_ratio).ceil()
+            as u32)
             .max(1)
             .min(participants.len() as u32);
 
@@ -167,15 +175,25 @@ impl ThresholdSignatureCoordinator {
         };
 
         // Start DKG session
-        self.dkg_manager.start_dkg_session(session_id.clone(), participants, Some(threshold), &dkg_params)
-            .map_err(|e| ConsensusError::ThresholdSignatureError(format!("DKG start failed: {}", e)))?;
+        self.dkg_manager
+            .start_dkg_session(
+                session_id.clone(),
+                participants,
+                Some(threshold),
+                &dkg_params,
+            )
+            .map_err(|e| {
+                ConsensusError::ThresholdSignatureError(format!("DKG start failed: {}", e))
+            })?;
 
         self.current_dkg_session = Some(session_id.clone());
 
-        info!("Started new DKG session {} with {} masternodes, threshold {}", 
-              hex::encode(&session_id), 
-              self.current_masternodes.len(), 
-              threshold);
+        info!(
+            "Started new DKG session {} with {} masternodes, threshold {}",
+            hex::encode(&session_id),
+            self.current_masternodes.len(),
+            threshold
+        );
 
         Ok(session_id)
     }
@@ -186,21 +204,27 @@ impl ThresholdSignatureCoordinator {
         message: &[u8],
         session_id: Option<DKGSessionID>,
     ) -> Result<Hash, ConsensusError> {
-        let session_id = session_id.or_else(|| self.current_dkg_session.clone())
-            .ok_or_else(|| ConsensusError::ThresholdSignatureError("No active DKG session".to_string()))?;
+        let session_id = session_id
+            .or_else(|| self.current_dkg_session.clone())
+            .ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError("No active DKG session".to_string())
+            })?;
 
         // Check if we can sign with this session
         if !self.dkg_manager.can_sign(&session_id) {
             return Err(ConsensusError::ThresholdSignatureError(
-                "Cannot sign with this session".to_string()
+                "Cannot sign with this session".to_string(),
             ));
         }
 
         // Generate request ID
-        let request_id = DKGSessionID(blake3::hash(&[message.as_ref(), session_id.as_ref()].concat()).into());
+        let request_id =
+            DKGSessionID(blake3::hash(&[message.as_ref(), session_id.as_ref()].concat()).into());
 
         // Calculate required shares
-        let required_shares = ((self.current_masternodes.len() as f64 * self.config.signature_threshold_ratio).ceil() as u32)
+        let required_shares = ((self.current_masternodes.len() as f64
+            * self.config.signature_threshold_ratio)
+            .ceil() as u32)
             .max(1);
 
         // Create signature request
@@ -210,7 +234,10 @@ impl ThresholdSignatureCoordinator {
             session_id: session_id.clone(),
             required_shares,
             received_shares: HashMap::new(),
-            status: SignatureRequestStatus::Collecting { received: 0, required: required_shares },
+            status: SignatureRequestStatus::Collecting {
+                received: 0,
+                required: required_shares,
+            },
             created_at: Instant::now(),
             timeout_secs: self.config.signature_timeout_secs,
         };
@@ -218,20 +245,30 @@ impl ThresholdSignatureCoordinator {
         // Check concurrent request limit
         if self.signature_requests.len() >= self.config.max_concurrent_signatures {
             return Err(ConsensusError::ThresholdSignatureError(
-                "Too many concurrent signature requests".to_string()
+                "Too many concurrent signature requests".to_string(),
             ));
         }
 
         self.signature_requests.insert(request_id.0, request);
 
         // Generate our signature share
-        let signature_share = self.dkg_manager.create_signature_share(&session_id, message)
-            .map_err(|e| ConsensusError::ThresholdSignatureError(format!("Failed to create signature share: {}", e)))?;
+        let signature_share = self
+            .dkg_manager
+            .create_signature_share(&session_id, message)
+            .map_err(|e| {
+                ConsensusError::ThresholdSignatureError(format!(
+                    "Failed to create signature share: {}",
+                    e
+                ))
+            })?;
 
         // Add our own signature share
         self.add_signature_share(request_id.0, signature_share)?;
 
-        info!("Created threshold signature request {}", hex::encode(&request_id));
+        info!(
+            "Created threshold signature request {}",
+            hex::encode(&request_id)
+        );
 
         Ok(request_id.0)
     }
@@ -242,62 +279,168 @@ impl ThresholdSignatureCoordinator {
         request_id: Hash,
         signature_share: DKGSignatureShare,
     ) -> Result<(), ConsensusError> {
-        let request = self.signature_requests.get_mut(&request_id)
-            .ok_or_else(|| ConsensusError::ThresholdSignatureError("Signature request not found".to_string()))?;
+        let request = self
+            .signature_requests
+            .get_mut(&request_id)
+            .ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError("Signature request not found".to_string())
+            })?;
 
         // Check if we already have a share from this participant
-        if request.received_shares.contains_key(&signature_share.participant_index) {
-            return Err(ConsensusError::ThresholdSignatureError(
-                format!("Already received signature share from participant {}", signature_share.participant_index)
-            ));
+        if request
+            .received_shares
+            .contains_key(&signature_share.participant_index)
+        {
+            return Err(ConsensusError::ThresholdSignatureError(format!(
+                "Already received signature share from participant {}",
+                signature_share.participant_index
+            )));
         }
 
-        request.received_shares.insert(signature_share.participant_index, signature_share.signature_share.clone());
+        request.received_shares.insert(
+            signature_share.participant_index,
+            signature_share.signature_share.clone(),
+        );
 
-        info!("Added signature share for request {} from participant {}", hex::encode(&request_id), signature_share.participant_index);
+        info!(
+            "Added signature share for request {} from participant {}",
+            hex::encode(&request_id),
+            signature_share.participant_index
+        );
 
         self.try_complete_signature(request_id)
     }
 
     /// Try to complete a signature by aggregating shares
     fn try_complete_signature(&mut self, request_id: Hash) -> Result<(), ConsensusError> {
-        let request = self.signature_requests.get_mut(&request_id)
-            .ok_or_else(|| ConsensusError::ThresholdSignatureError("Signature request not found".to_string()))?;
-
-        if request.received_shares.len() < request.required_shares as usize {
-            return Err(ConsensusError::ThresholdSignatureError("Insufficient signature shares".to_string()));
-        }
-
-        // For now, skip threshold signature aggregation due to missing dependency
-        // In a production system, this would properly convert and aggregate signature shares
-        let _signature_shares = &request.received_shares; // Placeholder
-
-        // For now, create a placeholder aggregated signature
-        let aggregated_signature = vec![0u8; 64]; // Placeholder signature
-
-        // Create threshold signature
-        let threshold_signature = ThresholdSignature {
-            session_id: request.session_id.clone(),
-            message_hash: request.message.as_slice().try_into()
-                .map_err(|_| ConsensusError::ThresholdSignatureError("Invalid message hash length".to_string()))?,
-            signature_shares: request.received_shares.clone(),
-            aggregated_signature: Some(aggregated_signature),
-            signers: request.received_shares.keys().cloned().collect(),
+        // Clone all needed fields first to avoid borrow checker issues
+        let (message, signature_shares, session_id, required_shares, _status) = {
+            let request = self.signature_requests.get(&request_id).ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError("Signature request not found".to_string())
+            })?;
+            (
+                request.message.clone(),
+                request.received_shares.clone(),
+                request.session_id.clone(),
+                request.required_shares,
+                request.status.clone(),
+            )
         };
 
-        // Update request status
+        if signature_shares.len() < required_shares as usize {
+            return Err(ConsensusError::ThresholdSignatureError(
+                "Insufficient signature shares".to_string(),
+            ));
+        }
+
+        // Now aggregate without holding a mutable borrow
+        let aggregated_signature =
+            self.aggregate_bls_signatures(&message, &signature_shares, &session_id)?;
+
+        // Now get a mutable borrow to update the request
+        let request = self
+            .signature_requests
+            .get_mut(&request_id)
+            .ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError("Signature request not found".to_string())
+            })?;
+
+        let threshold_signature = ThresholdSignature {
+            session_id: session_id.clone(),
+            message_hash: message.as_slice().try_into().map_err(|_| {
+                ConsensusError::ThresholdSignatureError("Invalid message hash length".to_string())
+            })?,
+            signature_shares: signature_shares.clone(),
+            aggregated_signature: Some(aggregated_signature),
+            signers: signature_shares.keys().cloned().collect(),
+        };
+
         request.status = SignatureRequestStatus::Completed {
             signature: threshold_signature.clone(),
         };
 
-        info!("Completed threshold signature for request {}", hex::encode(&request_id));
+        info!(
+            "Completed threshold signature for request {}",
+            hex::encode(&request_id)
+        );
 
         Ok(())
     }
 
+    /// Aggregate BLS signature shares into a single threshold signature
+    fn aggregate_bls_signatures(
+        &self,
+        message: &[u8],
+        signature_shares: &HashMap<u32, Vec<u8>>,
+        session_id: &DKGSessionID,
+    ) -> Result<Vec<u8>, ConsensusError> {
+        // Get the group public key for this session
+        let group_public_key = self
+            .dkg_manager
+            .get_group_public_key(session_id)
+            .ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError(
+                    "Group public key not found for session".to_string()
+                )
+            })?;
+
+        // Convert signature shares to threshold_crypto SignatureShare objects
+        let mut bls_signature_shares = HashMap::new();
+
+        for (participant_index, signature_share_bytes) in signature_shares {
+            // Validate signature share format (96 bytes for BLS12-381 SignatureShare)
+            if signature_share_bytes.len() != 96 {
+                return Err(ConsensusError::ThresholdSignatureError(format!(
+                    "Invalid signature share length for participant {}: expected 96, got {}",
+                    participant_index,
+                    signature_share_bytes.len()
+                )));
+            }
+
+            // Convert bytes to SignatureShare
+            let signature_share_array: [u8; 96] = signature_share_bytes.as_slice().try_into().map_err(|_| {
+                ConsensusError::ThresholdSignatureError(format!(
+                    "Invalid signature share length for participant {}: expected 96 bytes",
+                    participant_index
+                ))
+            })?;
+            let signature_share = threshold_crypto::SignatureShare::from_bytes(&signature_share_array)
+                .map_err(|e| {
+                    ConsensusError::ThresholdSignatureError(format!(
+                        "Failed to deserialize signature share for participant {}: {}",
+                        participant_index, e
+                    ))
+                })?;
+
+            bls_signature_shares.insert(*participant_index, signature_share);
+        }
+
+        // Aggregate the signature shares using threshold_crypto
+        let aggregated_signature = self.dkg_manager
+            .aggregate_signature_shares(&bls_signature_shares, signature_shares.len() as u32)
+            .map_err(|e| {
+                ConsensusError::ThresholdSignatureError(format!(
+                    "Failed to aggregate signature shares: {}", e
+                ))
+            })?;
+
+        // Verify the aggregated signature against the group public key
+        if !group_public_key.verify(&aggregated_signature, message) {
+            return Err(ConsensusError::ThresholdSignatureError(
+                "Aggregated signature verification failed".to_string()
+            ));
+        }
+
+        // Return the signature bytes
+        Ok(aggregated_signature.to_bytes().to_vec())
+    }
+
+
     /// Get the status of a signature request
     pub fn get_signature_status(&self, request_id: &Hash) -> Option<SignatureRequestStatus> {
-        self.signature_requests.get(request_id).map(|req| req.status.clone())
+        self.signature_requests
+            .get(request_id)
+            .map(|req| req.status.clone())
     }
 
     /// Get a completed threshold signature
@@ -310,6 +453,56 @@ impl ThresholdSignatureCoordinator {
         None
     }
 
+    /// Verify a threshold signature using the group public key
+    pub fn verify_threshold_signature(
+        &self,
+        signature: &ThresholdSignature,
+        message: &[u8],
+    ) -> Result<bool, ConsensusError> {
+        // Get the group public key for this session
+        let group_public_key = self
+            .dkg_manager
+            .get_group_public_key(&signature.session_id)
+            .ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError(
+                    "Group public key not found for session".to_string()
+                )
+            })?;
+
+        // Check if we have an aggregated signature
+        let aggregated_signature_bytes = signature
+            .aggregated_signature
+            .as_ref()
+            .ok_or_else(|| {
+                ConsensusError::ThresholdSignatureError(
+                    "No aggregated signature available".to_string()
+                )
+            })?;
+
+        // Convert bytes back to Signature
+        if aggregated_signature_bytes.len() != 96 {
+            return Err(ConsensusError::ThresholdSignatureError(format!(
+                "Invalid aggregated signature length: expected 96, got {}",
+                aggregated_signature_bytes.len()
+            )));
+        }
+
+        let aggregated_signature_array: [u8; 96] = aggregated_signature_bytes.as_slice().try_into().map_err(|_| {
+            ConsensusError::ThresholdSignatureError(
+                "Invalid aggregated signature length: expected 96 bytes".to_string()
+            )
+        })?;
+        let aggregated_signature = threshold_crypto::Signature::from_bytes(&aggregated_signature_array)
+            .map_err(|e| {
+                ConsensusError::ThresholdSignatureError(format!(
+                    "Failed to deserialize aggregated signature: {}", e
+                ))
+            })?;
+
+        // Verify the signature
+        Ok(group_public_key.verify(&aggregated_signature, message))
+    }
+
     /// Update block height and clean up expired requests
     pub fn update_block_height(&mut self, block_height: u64) {
         self.current_block_height = block_height;
@@ -320,7 +513,7 @@ impl ThresholdSignatureCoordinator {
     /// Get coordinator statistics
     pub fn get_stats(&self) -> ThresholdSignatureStats {
         let dkg_stats = self.dkg_manager.get_stats();
-        
+
         ThresholdSignatureStats {
             active_signature_requests: self.signature_requests.len(),
             current_masternodes: self.current_masternodes.len(),
@@ -341,7 +534,7 @@ impl ThresholdSignatureCoordinator {
         // Check for membership changes
         let current_set: std::collections::HashSet<_> = self.current_masternodes.iter().collect();
         let new_set: std::collections::HashSet<_> = new_masternodes.iter().collect();
-        
+
         current_set != new_set
     }
 

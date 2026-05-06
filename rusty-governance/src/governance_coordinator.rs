@@ -1,24 +1,24 @@
 //! Comprehensive governance coordinator that integrates all governance components
-//! 
+//!
 //! This module provides a unified interface for managing the entire governance
 //! lifecycle from proposal submission to activation.
 
-use log::{info, error};
+use log::{error, info};
+use std::sync::Arc;
 
-use rusty_shared_types::{
-    Hash, Transaction, ConsensusParams,
-    governance::{GovernanceProposal, GovernanceVote, ApprovalProof, ProposalType},
-};
 use rusty_core::consensus::state::BlockchainState;
+use rusty_shared_types::{
+    governance::{ApprovalProof, GovernanceProposal, GovernanceVote, ProposalType},
+    ConsensusParams, Hash, Transaction,
+};
 
 use crate::{
-    stake_burning::{StakeBurningManager, StakeBurningConfig},
-    proposal_validation::{ProposalValidator, ProposalValidationConfig, ProposalValidationError},
-    voting_coordinator::{VotingCoordinator, VotingConfig, ProposalOutcome},
-    proposal_activation::{ProposalActivationManager, ActivationConfig, ActivateProposalTx},
-    parameter_manager::{ParameterManager, ParameterChange},
+    parameter_manager::{ParameterChange, ParameterManager},
+    proposal_activation::{ActivateProposalTx, ActivationConfig, ProposalActivationManager},
+    proposal_validation::{ProposalValidationConfig, ProposalValidator},
+    stake_burning::{StakeBurningConfig, StakeBurningManager},
+    voting_coordinator::{ProposalOutcome, VotingConfig, VotingCoordinator},
 };
-
 
 /// Configuration for the governance coordinator
 #[derive(Debug, Clone)]
@@ -40,7 +40,7 @@ impl Default for GovernanceCoordinatorConfig {
     }
 }
 
-/// Comprehensive governance coordinator
+/// Comprehensive governance coordinator with enhanced blockchain state integration
 pub struct GovernanceCoordinator {
     config: GovernanceCoordinatorConfig,
     stake_burning_manager: StakeBurningManager,
@@ -48,6 +48,10 @@ pub struct GovernanceCoordinator {
     voting_coordinator: VotingCoordinator,
     activation_manager: ProposalActivationManager,
     parameter_manager: ParameterManager,
+    /// Live blockchain state for parameter synchronization
+    blockchain_state: Option<Arc<BlockchainState>>,
+    /// Live consensus parameters for real-time parameter values
+    consensus_params: Option<Arc<ConsensusParams>>,
 }
 
 impl GovernanceCoordinator {
@@ -69,7 +73,59 @@ impl GovernanceCoordinator {
             voting_coordinator,
             activation_manager,
             parameter_manager,
+            blockchain_state: None,
+            consensus_params: None,
         }
+    }
+
+    /// Create a governance coordinator with live blockchain state integration
+    pub fn new_with_blockchain_state(
+        config: GovernanceCoordinatorConfig,
+        blockchain_state: Arc<BlockchainState>,
+        consensus_params: Arc<ConsensusParams>,
+    ) -> Self {
+        let stake_burning_manager = StakeBurningManager::new(config.stake_burning.clone());
+        let proposal_validator = ProposalValidator::new(config.proposal_validation.clone());
+        let voting_coordinator = VotingCoordinator::new(
+            config.voting.clone(),
+            StakeBurningManager::new(config.stake_burning.clone()),
+        );
+        let activation_manager = ProposalActivationManager::new(config.activation.clone());
+        let parameter_manager = ParameterManager::new_with_blockchain_state(
+            blockchain_state.clone(),
+            consensus_params.clone(),
+        );
+
+        Self {
+            config,
+            stake_burning_manager,
+            proposal_validator,
+            voting_coordinator,
+            activation_manager,
+            parameter_manager,
+            blockchain_state: Some(blockchain_state),
+            consensus_params: Some(consensus_params),
+        }
+    }
+
+    /// Connect governance coordinator to live blockchain state
+    pub fn connect_to_blockchain_state(
+        &mut self,
+        blockchain_state: Arc<BlockchainState>,
+        consensus_params: Arc<ConsensusParams>,
+    ) {
+        self.blockchain_state = Some(blockchain_state.clone());
+        self.consensus_params = Some(consensus_params.clone());
+        
+        // Connect parameter manager to live blockchain state
+        self.parameter_manager
+            .connect_to_blockchain_state(blockchain_state, consensus_params);
+    }
+
+    /// Update consensus parameters reference
+    pub fn update_consensus_params(&mut self, consensus_params: Arc<ConsensusParams>) {
+        self.consensus_params = Some(consensus_params.clone());
+        self.parameter_manager.update_consensus_params(consensus_params);
     }
 
     /// Process a new governance proposal
@@ -79,10 +135,16 @@ impl GovernanceCoordinator {
         current_block_height: u64,
         existing_proposals: &[Hash],
         consensus_params: &ConsensusParams,
-        total_voting_power: u64,
+        _total_voting_power: u64,
     ) -> Result<(), String> {
-        self.proposal_validator.validate_proposal(&proposal, current_block_height, existing_proposals, consensus_params)?;
-        self.voting_coordinator.add_proposal(proposal, current_block_height)
+        self.proposal_validator.validate_proposal(
+            &proposal,
+            current_block_height,
+            existing_proposals,
+            consensus_params,
+        )?;
+        self.voting_coordinator
+            .add_proposal(proposal, current_block_height)
     }
 
     /// Process a new governance vote
@@ -90,20 +152,36 @@ impl GovernanceCoordinator {
         &mut self,
         vote: GovernanceVote,
         voter_power: u64,
+        live_tickets: &rusty_core::consensus::pos::LiveTicketsPool,
+        masternode_list: &rusty_shared_types::masternode::MasternodeList,
+        required_ticket_value: u64,
+        required_mn_collateral: u64,
     ) -> Result<(), String> {
-        self.voting_coordinator.record_vote(vote, voter_power)
+        self.voting_coordinator.record_vote(
+            vote,
+            voter_power,
+            live_tickets,
+            masternode_list,
+            required_ticket_value,
+            required_mn_collateral,
+        )
     }
 
     /// Process proposals that have ended and handle activation/burning
+    /// Per spec 08_json_rpc_spec.md Section 8.3.3 - requires counts for bicameral quorum checks
     pub fn process_ended_proposals(
         &mut self,
         current_block_height: u64,
         consensus_params: &ConsensusParams,
+        live_tickets_count: u32,
+        active_masternodes_count: u32,
     ) -> Result<GovernanceProcessingResult, String> {
-        // Process ended proposals
+        // Process ended proposals with actual voter counts for quorum checks
         let finalized_proposals = self.voting_coordinator.process_ended_proposals(
             current_block_height,
             consensus_params,
+            live_tickets_count,
+            active_masternodes_count,
         )?;
 
         let mut approved_proposals = Vec::new();
@@ -122,18 +200,27 @@ impl GovernanceCoordinator {
                                 no_votes: stats.no_votes,
                                 abstain_votes: stats.abstain_votes,
                                 approval_percentage_bp: Self::f64_to_u64_bp(stats.approval_rate),
-                                required_threshold_bp: Self::f64_to_u64_bp(self.get_required_threshold(&proposal)),
+                                required_threshold_bp: Self::f64_to_u64_bp(
+                                    self.get_required_threshold(&proposal),
+                                ),
                                 voting_end_height: current_block_height,
                                 voting_state_hash: self.calculate_voting_state_hash(&stats),
                             };
 
                             // For parameter changes, validate and schedule the parameter change
                             if proposal.proposal_type == ProposalType::ParameterChange {
-                                match self.parameter_manager.validate_parameter_change(&proposal) {
+                                match self.parameter_manager.validate_parameter_change(&proposal, consensus_params) {
                                     Ok(parameter_change) => {
-                                        let activation_height = current_block_height + consensus_params.activation_delay_blocks;
-                                        self.parameter_manager.schedule_parameter_change(parameter_change, activation_height)?;
-                                        info!("Scheduled parameter change for proposal {}", hex::encode(*proposal_id));
+                                        let activation_height = current_block_height
+                                            + consensus_params.activation_delay_blocks;
+                                        self.parameter_manager.schedule_parameter_change(
+                                            parameter_change,
+                                            activation_height,
+                                        )?;
+                                        info!(
+                                            "Scheduled parameter change for proposal {}",
+                                            hex::encode(*proposal_id)
+                                        );
                                     }
                                     Err(e) => {
                                         error!("Failed to validate parameter change for proposal {}: {}", hex::encode(*proposal_id), e);
@@ -153,8 +240,8 @@ impl GovernanceCoordinator {
                             approved_proposals.push(*proposal_id);
                         }
                     }
-                    Some(ProposalOutcome::Rejected) |
-                    Some(ProposalOutcome::InsufficientParticipation) => {
+                    Some(ProposalOutcome::Rejected)
+                    | Some(ProposalOutcome::InsufficientParticipation) => {
                         rejected_proposals.push(*proposal_id);
                     }
                     _ => {}
@@ -175,16 +262,24 @@ impl GovernanceCoordinator {
         activation_tx: &ActivateProposalTx,
         blockchain_state: &mut BlockchainState,
     ) -> Result<(), String> {
-        self.activation_manager.process_activation(activation_tx, blockchain_state)
+        self.activation_manager
+            .process_activation(activation_tx, blockchain_state)
     }
 
     /// Apply pending parameter changes at the current block height
+    /// Now synchronized with live blockchain consensus parameters
     pub fn apply_parameter_changes(
         &mut self,
         current_block_height: u64,
         consensus_params: &mut rusty_shared_types::ConsensusParams,
     ) -> Result<Vec<ParameterChange>, String> {
-        self.parameter_manager.apply_pending_changes(current_block_height, consensus_params)
+        // Update the live consensus parameters reference
+        if let Some(ref mut live_params) = self.consensus_params {
+            *Arc::get_mut(live_params).unwrap() = consensus_params.clone();
+        }
+
+        self.parameter_manager
+            .apply_pending_changes(current_block_height, consensus_params)
     }
 
     /// Execute pending stake burns
@@ -193,12 +288,14 @@ impl GovernanceCoordinator {
         current_block_height: u64,
         blockchain_state: &mut BlockchainState,
     ) -> Result<Vec<Transaction>, String> {
-        self.voting_coordinator.execute_pending_burns(current_block_height, blockchain_state)
+        self.voting_coordinator
+            .execute_pending_burns(current_block_height, blockchain_state)
     }
 
     /// Get proposals that can be activated at current height
     pub fn get_activatable_proposals(&self, current_block_height: u64) -> Vec<Hash> {
-        self.activation_manager.get_activatable_proposals(current_block_height)
+        self.activation_manager
+            .get_activatable_proposals(current_block_height)
     }
 
     /// Create an activation transaction for a proposal
@@ -219,6 +316,22 @@ impl GovernanceCoordinator {
         )
     }
 
+    /// Get current parameter value from live blockchain state
+    /// This method provides real-time parameter values from the blockchain
+    pub fn get_current_parameter_value(&self, parameter_name: &str) -> Result<crate::parameter_manager::ParameterValue, String> {
+        self.parameter_manager.get_current_parameter_value(parameter_name)
+    }
+
+    /// Get current blockchain height from live state
+    pub fn get_current_block_height(&self) -> Option<u64> {
+        self.parameter_manager.get_current_block_height()
+    }
+
+    /// Check if governance coordinator is connected to live blockchain state
+    pub fn is_connected_to_blockchain_state(&self) -> bool {
+        self.blockchain_state.is_some() && self.consensus_params.is_some() && self.parameter_manager.is_connected_to_blockchain_state()
+    }
+
     /// Get comprehensive governance statistics
     pub fn get_governance_stats(&self) -> GovernanceStats {
         let voting_stats = self.voting_coordinator.get_system_stats();
@@ -236,20 +349,52 @@ impl GovernanceCoordinator {
             pending_burns: burn_stats.pending_burns,
             validation_config: validation_stats,
             parameter_stats,
+            is_connected_to_blockchain_state: self.is_connected_to_blockchain_state(),
+            current_block_height: self.get_current_block_height(),
         }
     }
 
     /// Get proposal by ID (helper method)
-    fn get_proposal_by_id(&self, _proposal_id: &Hash) -> Option<GovernanceProposal> {
-        // This would need to be implemented to retrieve proposals from storage
-        // For now, return None as a placeholder
+    fn get_proposal_by_id(&self, proposal_id: &Hash) -> Option<GovernanceProposal> {
+        // Retrieve proposal from voting coordinator's active proposals
+        // First check active proposals
+        if let Some(proposal) = self
+            .voting_coordinator
+            .get_active_proposals()
+            .iter()
+            .find(|p| &p.proposal_id == proposal_id)
+        {
+            return Some((*proposal).clone());
+        }
+
+        // Check finalized proposals by checking each outcome type
+        let outcomes = [
+            ProposalOutcome::Approved,
+            ProposalOutcome::Rejected,
+            ProposalOutcome::Expired,
+            ProposalOutcome::InsufficientParticipation,
+        ];
+
+        for outcome in &outcomes {
+            if let Some(proposal) = self
+                .voting_coordinator
+                .get_proposals_by_outcome(outcome)
+                .iter()
+                .find(|p| &p.proposal_id == proposal_id)
+            {
+                return Some((*proposal).clone());
+            }
+        }
+
         None
     }
 
     /// Get required threshold for a proposal type
     fn get_required_threshold(&self, proposal: &GovernanceProposal) -> f64 {
         let proposal_type_str = format!("{:?}", proposal.proposal_type);
-        self.config.voting.approval_thresholds
+        self.config
+            .voting
+            .approval_thresholds
             .get(&proposal_type_str)
             .copied()
             .unwrap_or(0.60)
@@ -261,7 +406,10 @@ impl GovernanceCoordinator {
     }
 
     /// Calculate voting state hash
-    fn calculate_voting_state_hash(&self, stats: &crate::voting_coordinator::ProposalVotingStats) -> Hash {
+    fn calculate_voting_state_hash(
+        &self,
+        stats: &crate::voting_coordinator::ProposalVotingStats,
+    ) -> Hash {
         let mut hash_data = Vec::new();
         hash_data.extend_from_slice(&stats.proposal_id);
         hash_data.extend_from_slice(&stats.yes_votes.to_le_bytes());
@@ -297,22 +445,33 @@ impl GovernanceCoordinator {
         activation_tx: &ActivateProposalTx,
         current_block_height: u64,
     ) -> Result<(), String> {
-        self.activation_manager.validate_activation_transaction(activation_tx, current_block_height)
+        self.activation_manager
+            .validate_activation_transaction(activation_tx, current_block_height)
     }
 
     /// Get activation details for a proposal
-    pub fn get_activation_details(&self, proposal_id: &Hash) -> Option<&crate::proposal_activation::ActivatedProposal> {
+    pub fn get_activation_details(
+        &self,
+        proposal_id: &Hash,
+    ) -> Option<&crate::proposal_activation::ActivatedProposal> {
         self.activation_manager.get_activation_details(proposal_id)
     }
 
     /// Get burn details for a proposal
-    pub fn get_burn_details(&self, proposal_id: &Hash) -> Option<&crate::stake_burning::ExecutedBurn> {
+    pub fn get_burn_details(
+        &self,
+        proposal_id: &Hash,
+    ) -> Option<&crate::stake_burning::ExecutedBurn> {
         self.stake_burning_manager.get_burn_details(proposal_id)
     }
 
     /// Get parameter metadata
-    pub fn get_parameter_metadata(&self, parameter_name: &str) -> Option<&crate::parameter_manager::ParameterMetadata> {
-        self.parameter_manager.get_parameter_metadata(parameter_name)
+    pub fn get_parameter_metadata(
+        &self,
+        parameter_name: &str,
+    ) -> Option<&crate::parameter_manager::ParameterMetadata> {
+        self.parameter_manager
+            .get_parameter_metadata(parameter_name)
     }
 
     /// Get all registered parameters
@@ -321,12 +480,17 @@ impl GovernanceCoordinator {
     }
 
     /// Get parameters by category
-    pub fn get_parameters_by_category(&self, category: &crate::parameter_manager::ParameterCategory) -> Vec<&crate::parameter_manager::ParameterMetadata> {
+    pub fn get_parameters_by_category(
+        &self,
+        category: &crate::parameter_manager::ParameterCategory,
+    ) -> Vec<&crate::parameter_manager::ParameterMetadata> {
         self.parameter_manager.get_parameters_by_category(category)
     }
 
     /// Get pending parameter changes
-    pub fn get_pending_parameter_changes(&self) -> &std::collections::HashMap<Hash, ParameterChange> {
+    pub fn get_pending_parameter_changes(
+        &self,
+    ) -> &std::collections::HashMap<Hash, ParameterChange> {
         self.parameter_manager.get_pending_changes()
     }
 
@@ -344,7 +508,7 @@ pub struct GovernanceProcessingResult {
     pub rejected_proposals: Vec<Hash>,
 }
 
-/// Comprehensive governance statistics
+/// Comprehensive governance statistics with blockchain state integration info
 #[derive(Debug, Clone)]
 pub struct GovernanceStats {
     pub active_proposals: usize,
@@ -355,4 +519,6 @@ pub struct GovernanceStats {
     pub pending_burns: usize,
     pub validation_config: crate::proposal_validation::ProposalValidationStats,
     pub parameter_stats: crate::parameter_manager::ParameterManagerStats,
+    pub is_connected_to_blockchain_state: bool,
+    pub current_block_height: Option<u64>,
 }

@@ -1,12 +1,14 @@
-use ed25519_dalek::{PublicKey, Signature, Keypair, SecretKey};
-use rusty_crypto::signature::verify_signature;
-use rusty_shared_types::{Hash, ConsensusParams};
-use rusty_shared_types::masternode::{MasternodeID, PoSeChallenge, PoSeResponse, MasternodeIdentity, MasternodeList, MasternodeStatus};
-use std::collections::{HashMap, HashSet};
-use log::{info, warn, error, debug};
-use rand::{SeedableRng, Rng};
-use rand_chacha::ChaCha8Rng;
 use blake3;
+use ed25519_dalek::{Keypair, PublicKey, Signature, Signer};
+use log::{error, info, warn};
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use rusty_crypto::signature::verify_signature;
+use rusty_shared_types::masternode::{
+    MasternodeID, MasternodeIdentity, MasternodeList, MasternodeStatus, PoSeChallenge, PoSeResponse,
+};
+use rusty_shared_types::{ConsensusParams, Hash};
+use std::collections::{HashMap, HashSet};
 
 /// PoSe protocol configuration parameters
 #[derive(Debug, Clone)]
@@ -40,19 +42,18 @@ impl Default for PoSeConfig {
 
 /// PoSe challenge manager for coordinating challenges and responses
 pub struct PoSeManager {
-    config: PoSeConfig,
-    active_challenges: HashMap<MasternodeID, PoSeChallenge>,
+    pub config: PoSeConfig,
+    pub active_challenges: HashMap<MasternodeID, PoSeChallenge>,
     challenge_history: HashMap<MasternodeID, Vec<PoSeChallengeRecord>>,
-    pending_responses: HashMap<MasternodeID, PoSeResponse>,
 }
 
 /// Record of a PoSe challenge for tracking purposes
 #[derive(Debug, Clone)]
-struct PoSeChallengeRecord {
-    challenge: PoSeChallenge,
-    response: Option<PoSeResponse>,
-    response_received_at: Option<u64>, // Block height when response was received
-    is_valid: Option<bool>,
+pub struct PoSeChallengeRecord {
+    pub challenge: PoSeChallenge,
+    pub response: Option<PoSeResponse>,
+    pub response_received_at: Option<u64>, // Block height when response was received
+    pub is_valid: Option<bool>,
 }
 
 impl PoSeManager {
@@ -62,7 +63,6 @@ impl PoSeManager {
             config,
             active_challenges: HashMap::new(),
             challenge_history: HashMap::new(),
-            pending_responses: HashMap::new(),
         }
     }
 
@@ -85,7 +85,8 @@ impl PoSeManager {
         }
 
         // Select challenger masternodes deterministically
-        let challengers = self.select_challengers(current_block_height, block_hash, masternode_list)?;
+        let challengers =
+            self.select_challengers(current_block_height, block_hash, masternode_list)?;
 
         // Check if we are one of the selected challengers
         if !challengers.contains(our_masternode_id) {
@@ -93,12 +94,18 @@ impl PoSeManager {
         }
 
         // Select target masternodes for challenges
-        let targets = self.select_challenge_targets(current_block_height, block_hash, masternode_list, &challengers)?;
+        let targets = self.select_challenge_targets(
+            current_block_height,
+            block_hash,
+            masternode_list,
+            &challengers,
+        )?;
 
         let mut challenges = Vec::new();
 
         for target_id in targets {
-            let challenge_nonce = self.generate_challenge_nonce(current_block_height, &target_id, block_hash);
+            let challenge_nonce =
+                self.generate_challenge_nonce(current_block_height, &target_id, block_hash);
 
             let challenge = PoSeChallenge {
                 challenge_nonce,
@@ -116,24 +123,29 @@ impl PoSeManager {
             signed_challenge.signature = signature.to_bytes().to_vec();
 
             // Store the challenge
-            self.active_challenges.insert(target_id.clone(), signed_challenge.clone());
+            self.active_challenges
+                .insert(target_id.clone(), signed_challenge.clone());
 
             challenges.push(signed_challenge);
 
-            info!("Generated PoSe challenge for masternode {:?} at height {}", target_id, current_block_height);
+            info!(
+                "Generated PoSe challenge for masternode {:?} at height {}",
+                target_id, current_block_height
+            );
         }
 
         Ok(challenges)
     }
 
     /// Select challenger masternodes using deterministic pseudo-random function
-    fn select_challengers(
+    pub fn select_challengers(
         &self,
         block_height: u64,
         block_hash: &Hash,
         masternode_list: &MasternodeList,
     ) -> Result<Vec<MasternodeID>, String> {
-        let active_masternodes: Vec<&MasternodeID> = masternode_list.map
+        let active_masternodes: Vec<&MasternodeID> = masternode_list
+            .map
             .iter()
             .filter(|(_, entry)| entry.status == MasternodeStatus::Active)
             .map(|(id, _)| id)
@@ -156,7 +168,9 @@ impl PoSeManager {
         let mut selected_indices = HashSet::new();
         let mut challengers = Vec::new();
 
-        while challengers.len() < self.config.num_challengers && selected_indices.len() < active_masternodes.len() {
+        while challengers.len() < self.config.num_challengers
+            && selected_indices.len() < active_masternodes.len()
+        {
             let index = rng.gen_range(0..active_masternodes.len());
             if selected_indices.insert(index) {
                 challengers.push(active_masternodes[index].clone());
@@ -167,14 +181,15 @@ impl PoSeManager {
     }
 
     /// Select target masternodes for challenges
-    fn select_challenge_targets(
+    pub fn select_challenge_targets(
         &self,
         block_height: u64,
         block_hash: &Hash,
         masternode_list: &MasternodeList,
         challengers: &[MasternodeID],
     ) -> Result<Vec<MasternodeID>, String> {
-        let active_masternodes: Vec<&MasternodeID> = masternode_list.map
+        let active_masternodes: Vec<&MasternodeID> = masternode_list
+            .map
             .iter()
             .filter(|(_, entry)| entry.status == MasternodeStatus::Active)
             .map(|(id, _)| id)
@@ -201,7 +216,9 @@ impl PoSeManager {
         }
 
         // Select a subset of targets (e.g., 10% of eligible masternodes)
-        let num_targets = (eligible_targets.len() / 10).max(1).min(eligible_targets.len());
+        let num_targets = (eligible_targets.len() / 10)
+            .max(1)
+            .min(eligible_targets.len());
         let mut selected_indices = HashSet::new();
         let mut targets = Vec::new();
 
@@ -216,7 +233,12 @@ impl PoSeManager {
     }
 
     /// Generate a deterministic challenge nonce
-    fn generate_challenge_nonce(&self, block_height: u64, target_id: &MasternodeID, block_hash: &Hash) -> u64 {
+    pub fn generate_challenge_nonce(
+        &self,
+        block_height: u64,
+        target_id: &MasternodeID,
+        block_hash: &Hash,
+    ) -> u64 {
         let mut nonce_data = Vec::new();
         nonce_data.extend_from_slice(&block_height.to_le_bytes());
         nonce_data.extend_from_slice(&target_id.0.txid);
@@ -228,7 +250,10 @@ impl PoSeManager {
     }
 
     /// Serialize challenge data for signing
-    fn serialize_challenge_for_signing(&self, challenge: &PoSeChallenge) -> Result<Vec<u8>, String> {
+    pub fn serialize_challenge_for_signing(
+        &self,
+        challenge: &PoSeChallenge,
+    ) -> Result<Vec<u8>, String> {
         let mut data = Vec::new();
         data.extend_from_slice(&challenge.challenge_nonce.to_le_bytes());
         data.extend_from_slice(&challenge.challenge_block_hash);
@@ -246,21 +271,33 @@ pub fn verify_pose_response(
     params: &ConsensusParams,
 ) -> bool {
     // 1. Verify the response signature
-    let response_data = bincode::serialize(response)
-        .expect("Failed to serialize PoSeResponse");
+    let _response_data = bincode::serialize(response).expect("Failed to serialize PoSeResponse");
 
     // Convert owner public key bytes to VerifyingKey
-    let owner_pubkey_bytes: [u8; 32] = masternode_identity.collateral_ownership_public_key.clone().try_into().expect("Invalid public key length");
-    let owner_verifying_key = VerifyingKey::from_bytes(&owner_pubkey_bytes).expect("Invalid verifying key");
+    let owner_pubkey_bytes: [u8; 32] = masternode_identity
+        .collateral_ownership_public_key
+        .clone()
+        .try_into()
+        .expect("Invalid public key length");
+    let owner_verifying_key =
+        PublicKey::from_bytes(&owner_pubkey_bytes).expect("Invalid public key");
 
     // Check if the challenge and response nonces match
     if challenge.challenge_nonce != response.challenge_nonce {
-        error!("PoSe response nonce mismatch: expected {}, got {}", challenge.challenge_nonce, response.challenge_nonce);
+        error!(
+            "PoSe response nonce mismatch: expected {}, got {}",
+            challenge.challenge_nonce, response.challenge_nonce
+        );
         return false;
     }
 
     // Verify the signed block hash matches the challenge block hash
-    if challenge.challenge_block_hash != response.signed_block_hash.as_slice().try_into().expect("Invalid signed block hash length") {
+    let signed_block_hash: [u8; 32] = response
+        .signed_block_hash
+        .as_slice()
+        .try_into()
+        .expect("Invalid signed block hash length");
+    if challenge.challenge_block_hash != signed_block_hash {
         error!("PoSe response signed block hash mismatch");
         return false;
     }
@@ -271,32 +308,53 @@ pub fn verify_pose_response(
     signed_data.extend_from_slice(&response.challenge_nonce.to_le_bytes());
     signed_data.extend_from_slice(&response.signed_block_hash);
 
-    let signature_result = Signature::from_bytes(response.signed_block_hash.as_slice().try_into().map_err(|_| "Invalid signature length").unwrap());
+    let signature_result = Signature::from_bytes(
+        response
+            .signed_block_hash
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Invalid signature length")
+            .unwrap(),
+    );
 
     if signature_result.is_err() {
-        error!("Invalid PoSe response signature: {}", signature_result.unwrap_err());
+        error!(
+            "Invalid PoSe response signature: {}",
+            signature_result.unwrap_err()
+        );
         return false;
     }
     let response_signature = signature_result.unwrap();
 
     if verify_signature(
-        &owner_verifying_key.to_bytes(), // Use the public key bytes for verify_signature
+        &owner_verifying_key, // Pass the PublicKey directly
         &signed_data,
         &response_signature,
-    ).is_err() {
+    )
+    .is_err()
+    {
         error!("PoSe response signature verification failed for masternode {:?}. Signed data hash: {:?}", response.target_masternode_id, blake3::hash(&signed_data));
         return false;
     }
 
     // 2. Check for response timeliness
     // (This requires `current_block_height` and `challenge_generation_block_height`)
-    if current_block_height > challenge.challenge_generation_block_height + params.pose_response_timeout_seconds {
-        warn!("PoSe response for masternode {:?} is too late (challenge at {}, response at {})",
-              response.target_masternode_id, challenge.challenge_generation_block_height, current_block_height);
+    if current_block_height
+        > challenge.challenge_generation_block_height + params.pose_response_timeout_seconds
+    {
+        warn!(
+            "PoSe response for masternode {:?} is too late (challenge at {}, response at {})",
+            response.target_masternode_id,
+            challenge.challenge_generation_block_height,
+            current_block_height
+        );
         return false;
     }
 
-    info!("PoSe response for masternode {:?} is valid.", response.target_masternode_id);
+    info!(
+        "PoSe response for masternode {:?} is valid.",
+        response.target_masternode_id
+    );
     true
 }
 
@@ -309,12 +367,25 @@ impl PoSeManager {
         masternode_list: &MasternodeList,
     ) -> Result<bool, String> {
         // Find the corresponding challenge
-        let challenge = self.active_challenges.remove(&response.target_masternode_id)
-            .ok_or_else(|| format!("No active challenge found for masternode {:?}", response.target_masternode_id))?;
+        let challenge = self
+            .active_challenges
+            .remove(&response.target_masternode_id)
+            .ok_or_else(|| {
+                format!(
+                    "No active challenge found for masternode {:?}",
+                    response.target_masternode_id
+                )
+            })?;
 
         // Get the masternode identity for verification
-        let masternode_entry = masternode_list.get_masternode(&response.target_masternode_id)
-            .ok_or_else(|| format!("Masternode {:?} not found in list", response.target_masternode_id))?;
+        let masternode_entry = masternode_list
+            .get_masternode(&response.target_masternode_id)
+            .ok_or_else(|| {
+                format!(
+                    "Masternode {:?} not found in list",
+                    response.target_masternode_id
+                )
+            })?;
         let masternode_identity = &masternode_entry.identity;
 
         let is_valid = verify_pose_response(
@@ -332,7 +403,8 @@ impl PoSeManager {
             response_received_at: Some(current_block_height),
             is_valid: Some(is_valid),
         };
-        self.challenge_history.entry(challenge.challenger_masternode_id.clone())
+        self.challenge_history
+            .entry(challenge.challenger_masternode_id.clone())
             .or_default()
             .push(record);
 
@@ -361,14 +433,12 @@ impl PoSeManager {
     }
 
     /// Check for timed-out challenges and mark masternodes as non-responsive
-    pub fn check_challenge_timeouts(
-        &mut self,
-        current_block_height: u64,
-    ) -> Vec<MasternodeID> {
+    pub fn check_challenge_timeouts(&mut self, current_block_height: u64) -> Vec<MasternodeID> {
         let timeout_blocks = self.config.response_timeout_seconds / 150; // Assuming ~2.5 min blocks
         let mut timed_out_masternodes = Vec::new();
 
-        let expired_challenges: Vec<MasternodeID> = self.active_challenges
+        let expired_challenges: Vec<MasternodeID> = self
+            .active_challenges
             .iter()
             .filter(|(_, challenge)| {
                 current_block_height - challenge.challenge_generation_block_height > timeout_blocks
@@ -401,16 +471,26 @@ impl PoSeManager {
 
     /// Get PoSe statistics for a masternode
     pub fn get_masternode_pose_stats(&self, masternode_id: &MasternodeID) -> PoSeStats {
-        let history = self.challenge_history.get(masternode_id).cloned().unwrap_or_default();
+        let history = self
+            .challenge_history
+            .get(masternode_id)
+            .cloned()
+            .unwrap_or_default();
 
         let total_challenges = history.len();
-        let successful_responses = history.iter()
+        let successful_responses = history
+            .iter()
             .filter(|record| record.is_valid == Some(true))
             .count();
-        let failed_responses = history.iter()
+        let failed_responses = history
+            .iter()
             .filter(|record| record.is_valid == Some(false))
             .count();
-        let pending_challenges = if self.active_challenges.contains_key(masternode_id) { 1 } else { 0 };
+        let pending_challenges = if self.active_challenges.contains_key(masternode_id) {
+            1
+        } else {
+            0
+        };
 
         // Calculate consecutive failures
         let mut consecutive_failures = 0;
@@ -451,12 +531,14 @@ impl PoSeManager {
     pub fn cleanup_old_history(&mut self, current_block_height: u64, max_age_blocks: u64) {
         for (_, history) in self.challenge_history.iter_mut() {
             history.retain(|record| {
-                current_block_height - record.challenge.challenge_generation_block_height <= max_age_blocks
+                current_block_height - record.challenge.challenge_generation_block_height
+                    <= max_age_blocks
             });
         }
 
         // Remove empty histories
-        self.challenge_history.retain(|_, history| !history.is_empty());
+        self.challenge_history
+            .retain(|_, history| !history.is_empty());
     }
 }
 

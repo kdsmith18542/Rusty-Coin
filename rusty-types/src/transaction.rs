@@ -1,10 +1,15 @@
-use serde::{Deserialize, Serialize};
 use bincode;
 use rusty_shared_types::{
-    governance, TxInput, TxOutput,
-    TransactionSignature, MasternodeIdentity,
-    masternode::MasternodeSlashTx
+    governance, masternode::MasternodeSlashTx, MasternodeIdentity, TransactionSignature, TxInput,
+    TxOutput,
 };
+use serde::{Deserialize, Serialize};
+
+/// Error type for transaction operations
+#[derive(Debug, Clone, PartialEq)]
+pub enum TransactionError {
+    UnsupportedWitnessOperation(String),
+}
 
 /// Represents the different types of transactions supported by the blockchain.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,7 +109,7 @@ impl Transaction {
             Self::TicketPurchase { fee, .. } => *fee,
             Self::TicketRedemption { fee, .. } => *fee,
             Self::GovernanceProposal(_) => 0, // Governance proposals have a stake, not a fee
-            Self::GovernanceVote(_) => 0, // Governance votes have a small fee handled elsewhere
+            Self::GovernanceVote(_) => 0,     // Governance votes have a small fee handled elsewhere
             Self::ActivateProposal { .. } => 0, // Activation fee handled in inputs/outputs
             Self::MasternodeSlashTx(tx) => tx.fee,
             _ => 0, // Other transaction types might not have an explicit fee field
@@ -193,29 +198,54 @@ impl Transaction {
         }
     }
 
-    pub fn get_witnesses_mut(&mut self) -> &mut Vec<Vec<u8>> {
+    pub fn get_witnesses_mut(&mut self) -> Result<&mut Vec<Vec<u8>>, TransactionError> {
         match self {
-            Self::Standard { witness, .. } => witness,
-            Self::Coinbase { witness, .. } => witness,
-            Self::MasternodeRegister { witness, .. } => witness,
-            Self::MasternodeCollateral { witness, .. } => witness,
-            Self::ActivateProposal { witness, .. } => witness,
-            Self::TicketPurchase { witness, .. } => witness,
-            Self::TicketRedemption { witness, .. } => witness,
-            _ => panic!("Attempted to get mutable witnesses from a transaction type that does not support them"), // This should be handled more gracefully, e.g., by returning Option<&mut Vec<Vec<u8>>>
+            Self::Standard { witness, .. } => Ok(witness),
+            Self::Coinbase { witness, .. } => Ok(witness),
+            Self::MasternodeRegister { witness, .. } => Ok(witness),
+            Self::MasternodeCollateral { witness, .. } => Ok(witness),
+            Self::ActivateProposal { witness, .. } => Ok(witness),
+            Self::TicketPurchase { witness, .. } => Ok(witness),
+            Self::TicketRedemption { witness, .. } => Ok(witness),
+            _ => Err(TransactionError::UnsupportedWitnessOperation(
+                "Transaction type does not support mutable witnesses".to_string(),
+            )),
         }
     }
 
-    pub fn set_witnesses(&mut self, witnesses: Vec<Vec<u8>>) {
+    pub fn set_witnesses(&mut self, witnesses: Vec<Vec<u8>>) -> Result<(), TransactionError> {
         match self {
-            Self::Standard { witness, .. } => *witness = witnesses,
-            Self::Coinbase { witness, .. } => *witness = witnesses,
-            Self::MasternodeRegister { witness, .. } => *witness = witnesses,
-            Self::MasternodeCollateral { witness, .. } => *witness = witnesses,
-            Self::ActivateProposal { witness, .. } => *witness = witnesses,
-            Self::TicketPurchase { witness, .. } => *witness = witnesses,
-            Self::TicketRedemption { witness, .. } => *witness = witnesses,
-            _ => panic!("Attempted to set witnesses on a transaction type that does not support them"), // This should be handled more gracefully
+            Self::Standard { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            Self::Coinbase { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            Self::MasternodeRegister { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            Self::MasternodeCollateral { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            Self::ActivateProposal { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            Self::TicketPurchase { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            Self::TicketRedemption { witness, .. } => {
+                *witness = witnesses;
+                Ok(())
+            }
+            _ => Err(TransactionError::UnsupportedWitnessOperation(
+                "Transaction type does not support setting witnesses".to_string(),
+            )),
         }
     }
 }

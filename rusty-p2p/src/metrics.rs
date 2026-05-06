@@ -7,6 +7,7 @@ use log::{error, warn, info, debug};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
+#[allow(missing_docs)]
 pub enum MetricsError {
     #[error("Prometheus initialization failed: {0}")]
     InitializationError(#[from] prometheus::Error),

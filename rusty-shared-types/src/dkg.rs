@@ -1,7 +1,7 @@
 //! Distributed Key Generation (DKG) types for Rusty Coin masternode threshold signatures
 
-use serde::{Serialize, Deserialize};
 use crate::{Hash, MasternodeID};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::hash::Hash as StdHash;
 
@@ -36,40 +36,40 @@ pub struct DKGParticipant {
 }
 
 /// DKG commitment data for Feldman's VSS (Verifiable Secret Sharing)
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DKGCommitment {
     pub participant_index: u32,
     pub commitments: Vec<Vec<u8>>, // G1 points serialized as bytes
-    pub signature: Vec<u8>, // Ed25519 signature over commitments by participant
+    pub signature: Vec<u8>,        // Ed25519 signature over commitments by participant
 }
 
 /// Secret share for a specific participant in DKG
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DKGSecretShare {
     pub from_participant: u32,
     pub to_participant: u32,
     pub encrypted_share: Vec<u8>, // Encrypted with recipient's public key
-    pub signature: Vec<u8>, // Ed25519 signature by sender
+    pub signature: Vec<u8>,       // Ed25519 signature by sender
 }
 
 /// Complaint against a participant for invalid shares
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DKGComplaint {
     pub complainant: u32,
     pub accused: u32,
     pub session_id: DKGSessionID,
-    pub evidence: Vec<u8>, // Cryptographic proof of invalid share
+    pub evidence: Vec<u8>,  // Cryptographic proof of invalid share
     pub signature: Vec<u8>, // Ed25519 signature by complainant
 }
 
 /// Response to a complaint with justification
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DKGJustification {
     pub accused: u32,
     pub complainant: u32,
     pub session_id: DKGSessionID,
     pub revealed_share: Vec<u8>, // The actual share to prove validity
-    pub signature: Vec<u8>, // Ed25519 signature by accused
+    pub signature: Vec<u8>,      // Ed25519 signature by accused
 }
 
 /// Current state of a DKG session
@@ -113,12 +113,12 @@ pub struct ThresholdSignature {
     pub session_id: DKGSessionID,
     pub message_hash: Hash,
     pub signature_shares: HashMap<u32, Vec<u8>>, // Participant index -> BLS signature share
-    pub aggregated_signature: Option<Vec<u8>>, // Final aggregated BLS signature
-    pub signers: Vec<u32>, // Indices of participants who contributed shares
+    pub aggregated_signature: Option<Vec<u8>>,   // Final aggregated BLS signature
+    pub signers: Vec<u32>,                       // Indices of participants who contributed shares
 }
 
 /// Request to create a threshold signature
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ThresholdSignatureRequest {
     pub session_id: DKGSessionID,
     pub message: Vec<u8>,
@@ -128,13 +128,13 @@ pub struct ThresholdSignatureRequest {
 }
 
 /// Individual signature share for threshold signing
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SignatureShare {
     pub session_id: DKGSessionID,
     pub participant_index: u32,
     pub message_hash: Hash,
     pub signature_share: Vec<u8>, // BLS signature share
-    pub signature: Vec<u8>, // Ed25519 signature by participant for authenticity
+    pub signature: Vec<u8>,       // Ed25519 signature by participant for authenticity
 }
 
 /// DKG protocol parameters
@@ -172,11 +172,11 @@ impl DKGSession {
         creation_block_height: u64,
         params: &DKGParams,
     ) -> Self {
-        let timeout_block_height = creation_block_height + 
-            params.commitment_timeout_blocks + 
-            params.share_timeout_blocks + 
-            params.complaint_timeout_blocks + 
-            params.justification_timeout_blocks;
+        let timeout_block_height = creation_block_height
+            + params.commitment_timeout_blocks
+            + params.share_timeout_blocks
+            + params.complaint_timeout_blocks
+            + params.justification_timeout_blocks;
 
         Self {
             session_id,
@@ -205,7 +205,9 @@ impl DKGSession {
 
     /// Get participant by index
     pub fn get_participant(&self, index: u32) -> Option<&DKGParticipant> {
-        self.participants.iter().find(|p| p.participant_index == index)
+        self.participants
+            .iter()
+            .find(|p| p.participant_index == index)
     }
 
     /// Check if session has timed out
@@ -225,7 +227,11 @@ impl DKGSession {
         }
 
         // Verify the participant is part of this session
-        if !self.participants.iter().any(|p| p.participant_index == commitment.participant_index) {
+        if !self
+            .participants
+            .iter()
+            .any(|p| p.participant_index == commitment.participant_index)
+        {
             return Err(DKGError::InvalidParticipant);
         }
 
@@ -234,7 +240,8 @@ impl DKGSession {
             return Err(DKGError::DuplicateCommitment);
         }
 
-        self.commitments.insert(commitment.participant_index, commitment);
+        self.commitments
+            .insert(commitment.participant_index, commitment);
         Ok(())
     }
 
@@ -245,7 +252,11 @@ impl DKGSession {
         }
 
         // Verify the participant is part of this session
-        if !self.participants.iter().any(|p| p.participant_index == share.from_participant) {
+        if !self
+            .participants
+            .iter()
+            .any(|p| p.participant_index == share.from_participant)
+        {
             return Err(DKGError::InvalidParticipant);
         }
 
@@ -269,7 +280,8 @@ impl DKGSession {
     pub fn advance_phase(&mut self) -> Result<(), DKGError> {
         match self.state {
             DKGSessionState::WaitingForParticipants => {
-                if self.participants.len() >= 3 { // Minimum participants
+                if self.participants.len() >= 3 {
+                    // Minimum participants
                     self.state = DKGSessionState::CommitmentPhase;
                 } else {
                     return Err(DKGError::InsufficientParticipants);
@@ -312,6 +324,7 @@ impl DKGSession {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DKGError {
     InvalidParticipant,
+    NotAParticipant, // Added for dkg_manager.rs
     InvalidCommitment,
     InvalidShare,
     InsufficientParticipants,
@@ -326,14 +339,21 @@ pub enum DKGError {
     SerializationError(String),
     CryptographicError(String),
     InsufficientCommitments, // New error variant
-    InsufficientShares, // New error variant
-    InternalError(String), // New error variant
+    InsufficientShares,      // New error variant
+    InternalError(String),   // New error variant
+    InvalidThreshold,        // Threshold parameter validation
+    NotEnoughParticipants,   // Too few participants
+    TooManyParticipants,     // Too many participants
+    DuplicateParticipant,    // Duplicate participant in list
+    InitiatorNotParticipant, // Initiator not in participant list
+    InvalidBlockHeight,      // Block height is too old or in the future
 }
 
 impl std::fmt::Display for DKGError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DKGError::InvalidParticipant => write!(f, "Invalid participant"),
+            DKGError::NotAParticipant => write!(f, "Not a participant in this session"),
             DKGError::InvalidCommitment => write!(f, "Invalid commitment"),
             DKGError::InvalidShare => write!(f, "Invalid share"),
             DKGError::InsufficientParticipants => write!(f, "Insufficient participants"),
@@ -350,6 +370,14 @@ impl std::fmt::Display for DKGError {
             DKGError::InsufficientCommitments => write!(f, "Insufficient commitments"),
             DKGError::InsufficientShares => write!(f, "Insufficient shares"),
             DKGError::InternalError(msg) => write!(f, "Internal error: {}", msg),
+            DKGError::InvalidThreshold => write!(f, "Invalid threshold parameter"),
+            DKGError::NotEnoughParticipants => write!(f, "Not enough participants for DKG"),
+            DKGError::TooManyParticipants => write!(f, "Too many participants for DKG"),
+            DKGError::DuplicateParticipant => write!(f, "Duplicate participant in list"),
+            DKGError::InitiatorNotParticipant => write!(f, "Initiator not in participant list"),
+            DKGError::InvalidBlockHeight => {
+                write!(f, "Invalid DKG block height (too old or in the future)")
+            }
         }
     }
 }

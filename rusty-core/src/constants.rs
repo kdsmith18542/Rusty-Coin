@@ -15,6 +15,10 @@ pub const LOCKTIME_THRESHOLD: u32 = 500_000_000;
 /// Minimum value for a transaction output to not be considered 'dust'
 pub const DUST_LIMIT: u64 = 500; // 500 satoshis
 
+/// Minimum relay fee per byte in satoshis
+/// Spec: [05_utxo_model_spec.md §5.4](https://github.com/rusty-coin/specs/blob/main/docs/specs/05_utxo_model_spec.md#54-transaction-validation-rules-detailed)
+pub const MIN_RELAY_FEE_PER_BYTE: u64 = 1; // 1 satoshi per byte
+
 /// Maximum block size in bytes
 pub const MAX_BLOCK_SIZE: u64 = 1_000_000; // 1 MB (example)
 
@@ -25,7 +29,8 @@ pub const MAX_SCRIPT_BYTES: usize = 10_000;
 pub const MAX_OPCODE_COUNT: usize = 200;
 
 /// Maximum stack items during script execution
-pub const MAX_STACK_DEPTH: usize = 1000;
+/// Spec: docs/specs/04_ferrisscript_spec.md Section 4.3.3
+pub const MAX_STACK_DEPTH: usize = 100;
 
 /// Maximum signature operations per transaction
 pub const MAX_SIG_OPS: usize = 20;
@@ -44,4 +49,4 @@ pub const MALICIOUS_BEHAVIOR_SLASH_PERCENTAGE: f64 = 1.0; // 100%
 
 /// Minimum reputation score for masternodes to participate in FerrousShield mixing
 /// Spec: [06_masternode_protocol_spec.md §6.5.2](https://github.com/rusty-coin/specs/blob/main/docs/specs/06_masternode_protocol_spec.md#652-ferrousshield-trust-minimized-privacy)
-pub const MIN_MN_REPUTATION: u32 = 50; 
+pub const MIN_MN_REPUTATION: u32 = 50;

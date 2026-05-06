@@ -180,9 +180,8 @@ fn test_block_validation_fuzzing(data: &[u8]) {
     fee: 0,
     witness: vec![],
                 version: 1,
-                inputs: vec![TxInput {
-    witness: vec![vec![]],
-                    previous_output: OutPoint {
+                inputs: vec![TxInput::from_outpoint(
+                inputs: vec![    OutPoint {
                         txid: {
                             let mut txid = [0u8; 32];
                             txid.copy_from_slice(&chunk[0..32]);
@@ -194,13 +193,14 @@ fn test_block_validation_fuzzing(data: &[u8]) {
                             0
                         },
                     },
-                    script_sig: chunk.get(36..56).unwrap_or(&[]).to_vec(),
-                    sequence: if chunk.len() >= 60 {
+                inputs: vec![    chunk.get(36..56).unwrap_or(&[]).to_vec(),
+                inputs: vec![    if chunk.len() >= 60 {
                         u32::from_le_bytes([chunk[56], chunk[57], chunk[58], chunk[59]])
                     } else {
                         0xffffffff
                     },
-                }],
+                inputs: vec![    vec![vec![]],
+                inputs: vec![)],
                 outputs: vec![TxOutput {
     memo: Some(vec![]),
                     value: if chunk.len() >= 64 {
@@ -429,8 +429,8 @@ fn test_consensus_edge_cases(data: &[u8]) {
     if data.len() >= 68 {
         let _tx = Transaction::Standard {
             version: 1,
-            inputs: vec![TxInput {
-                previous_output: OutPoint {
+            inputs: vec![TxInput::from_outpoint(
+    OutPoint {
                     txid: {
                         let mut txid = [0u8; 32];
                         let len = std::cmp::min(32, data.len());
@@ -443,14 +443,14 @@ fn test_consensus_edge_cases(data: &[u8]) {
                         0
                     },
                 },
-                script_sig: data.get(36..56).unwrap_or(&[]).to_vec(),
-                sequence: if data.len() >= 60 {
+    data.get(36..56).unwrap_or(&[]).to_vec(),
+    if data.len() >= 60 {
                     u32::from_le_bytes([data[56], data[57], data[58], data[59]])
                 } else {
                     0xFFFFFFFF
                 },
-                witness: vec![vec![]],
-            }],
+    vec![vec![]],
+)],
             outputs: vec![TxOutput {
                 value: if data.len() >= 68 {
                     u64::from_le_bytes([

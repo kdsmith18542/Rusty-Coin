@@ -257,17 +257,50 @@ impl NetworkManager {
     }
     
     pub async fn broadcast(&self, message: Message) -> NetworkResult<()> {
-        // TODO: Implement actual broadcast using gossipsub
-        log::warn!("Broadcast not yet fully implemented for libp2p. Message: {:?}", message);
-        // Example of publishing a message to a topic
-        // self.swarm.behaviour_mut().gossipsub.publish(topic, message_data);
+        // Implement actual broadcast using gossipsub
+        match &message {
+            Message::Block(block) => {
+                let topic = libp2p::gossipsub::IdentTopic::new("blocks");
+                let block_data = bincode::serialize(block)
+                    .map_err(|e| NetworkError::SerializationError(e.to_string()))?;
+                self.swarm.behaviour_mut().gossipsub.publish(topic, block_data.clone())
+                    .map_err(|e| NetworkError::BroadcastError(e.to_string()))?;
+                log::info!("Broadcasting block with {} transactions", block.transactions.len());
+            },
+            Message::Transaction(tx) => {
+                let topic = libp2p::gossipsub::IdentTopic::new("transactions");
+                let tx_data = bincode::serialize(tx)
+                    .map_err(|e| NetworkError::SerializationError(e.to_string()))?;
+                self.swarm.behaviour_mut().gossipsub.publish(topic, tx_data.clone())
+                    .map_err(|e| NetworkError::BroadcastError(e.to_string()))?;
+                log::info!("Broadcasting transaction: {}", hex::encode(tx.txid()));
+            },
+            Message::Ping => {
+                let topic = libp2p::gossipsub::IdentTopic::new("ping");
+                let ping_data = b"ping".to_vec();
+                self.swarm.behaviour_mut().gossipsub.publish(topic, ping_data.clone())
+                    .map_err(|e| NetworkError::BroadcastError(e.to_string()))?;
+                log::debug!("Broadcasting ping message");
+            },
+            Message::Pong => {
+                let topic = libp2p::gossipsub::IdentTopic::new("ping");
+                let pong_data = b"pong".to_vec();
+                self.swarm.behaviour_mut().gossipsub.publish(topic, pong_data.clone())
+                    .map_err(|e| NetworkError::BroadcastError(e.to_string()))?;
+                log::debug!("Broadcasting pong message");
+            },
+        }
         Ok(())
     }
 
     pub async fn get_peers(&self) -> Vec<String> {
-        // TODO: Implement peer listing from Kademlia or Swarm connections
-        log::warn!("get_peers not yet implemented for libp2p.");
-        vec![]
+        // Implement peer listing from connected peers
+        let mut peers = Vec::new();
+        for peer_id in self.swarm.connected_peers() {
+            peers.push(peer_id.to_string());
+        }
+        log::debug!("Returning {} connected peers", peers.len());
+        peers
     }
 
     pub async fn next_event(&mut self) -> Option<NetworkEvent> {

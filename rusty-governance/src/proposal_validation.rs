@@ -1,15 +1,14 @@
 //! Proposal validation for governance system
-//! 
+//!
 //! This module validates governance proposals before they are accepted
 //! into the active proposal set, preventing malicious or invalid proposals.
 
-use log::{info, warn, error, debug};
+use log::info;
 use rusty_shared_types::{
-    Hash, ConsensusParams,
     governance::{GovernanceProposal, ProposalType},
+    ConsensusParams, Hash,
 };
 use std::fmt;
-use thiserror::Error;
 
 /// Validation errors for governance proposals
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,25 +56,55 @@ pub enum ProposalValidationError {
 impl fmt::Display for ProposalValidationError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            ProposalValidationError::InvalidProposalId => write!(f, "Invalid proposal ID or already exists"),
+            ProposalValidationError::InvalidProposalId => {
+                write!(f, "Invalid proposal ID or already exists")
+            }
             ProposalValidationError::InvalidSignature => write!(f, "Invalid proposer signature"),
             ProposalValidationError::InvalidVotingPeriod => write!(f, "Invalid voting period"),
-            ProposalValidationError::UnsupportedProposalType => write!(f, "Unsupported proposal type"),
-            ProposalValidationError::MissingRequiredFields => write!(f, "Missing required fields for proposal type"),
-            ProposalValidationError::ProtocolViolation => write!(f, "Proposal content violates protocol rules"),
-            ProposalValidationError::InsufficientCollateral => write!(f, "Insufficient collateral provided"),
-            ProposalValidationError::InvalidContent => write!(f, "Invalid proposal title or description"),
-            ProposalValidationError::InvalidParameterChange => write!(f, "Parameter change proposal has invalid target or value"),
-            ProposalValidationError::InsufficientTreasuryFunds => write!(f, "Treasury spend proposal exceeds available funds"),
-            ProposalValidationError::ConflictingProposal => write!(f, "Proposal conflicts with existing active proposals"),
+            ProposalValidationError::UnsupportedProposalType => {
+                write!(f, "Unsupported proposal type")
+            }
+            ProposalValidationError::MissingRequiredFields => {
+                write!(f, "Missing required fields for proposal type")
+            }
+            ProposalValidationError::ProtocolViolation => {
+                write!(f, "Proposal content violates protocol rules")
+            }
+            ProposalValidationError::InsufficientCollateral => {
+                write!(f, "Insufficient collateral provided")
+            }
+            ProposalValidationError::InvalidContent => {
+                write!(f, "Invalid proposal title or description")
+            }
+            ProposalValidationError::InvalidParameterChange => {
+                write!(f, "Parameter change proposal has invalid target or value")
+            }
+            ProposalValidationError::InsufficientTreasuryFunds => {
+                write!(f, "Treasury spend proposal exceeds available funds")
+            }
+            ProposalValidationError::ConflictingProposal => {
+                write!(f, "Proposal conflicts with existing active proposals")
+            }
             ProposalValidationError::TooLarge => write!(f, "Proposal is too large"),
-            ProposalValidationError::MissingProtocolVersion => write!(f, "Protocol upgrade proposal is missing protocol version"),
-            ProposalValidationError::MissingParameterDetails => write!(f, "Parameter change proposal is missing parameter details"),
-            ProposalValidationError::MissingTreasuryDetails => write!(f, "Treasury spend proposal is missing treasury details"),
+            ProposalValidationError::MissingProtocolVersion => {
+                write!(f, "Protocol upgrade proposal is missing protocol version")
+            }
+            ProposalValidationError::MissingParameterDetails => {
+                write!(f, "Parameter change proposal is missing parameter details")
+            }
+            ProposalValidationError::MissingTreasuryDetails => {
+                write!(f, "Treasury spend proposal is missing treasury details")
+            }
             ProposalValidationError::InvalidAmount => write!(f, "Proposal amount is invalid"),
-            ProposalValidationError::FutureSubmission => write!(f, "Proposal submission height is in the future"),
-            ProposalValidationError::MissingBugDescription => write!(f, "Bug fix proposal is missing bug description"),
-            ProposalValidationError::MissingCommunityFundDetails => write!(f, "Community fund proposal is missing details"),
+            ProposalValidationError::FutureSubmission => {
+                write!(f, "Proposal submission height is in the future")
+            }
+            ProposalValidationError::MissingBugDescription => {
+                write!(f, "Bug fix proposal is missing bug description")
+            }
+            ProposalValidationError::MissingCommunityFundDetails => {
+                write!(f, "Community fund proposal is missing details")
+            }
         }
     }
 }
@@ -100,8 +129,8 @@ pub struct ProposalValidationConfig {
 impl Default for ProposalValidationConfig {
     fn default() -> Self {
         Self {
-            min_voting_period: 1000,    // ~2.5 days
-            max_voting_period: 100000,  // ~250 days
+            min_voting_period: 1000,   // ~2.5 days
+            max_voting_period: 100000, // ~250 days
             min_title_length: 10,
             max_title_length: 128,
             required_collateral: 1000_000_000, // 1000 RUST
@@ -149,7 +178,10 @@ impl ProposalValidator {
         // Validate signature (simplified - would use actual crypto verification)
         self.validate_signature(proposal)?;
 
-        info!("Proposal {} passed validation", hex::encode(proposal.proposal_id));
+        info!(
+            "Proposal {} passed validation",
+            hex::encode(proposal.proposal_id)
+        );
         Ok(())
     }
 
@@ -171,7 +203,9 @@ impl ProposalValidator {
 
         // Check voting period length
         let voting_period = proposal.end_block_height - proposal.start_block_height;
-        if voting_period < self.config.min_voting_period || voting_period > self.config.max_voting_period {
+        if voting_period < self.config.min_voting_period
+            || voting_period > self.config.max_voting_period
+        {
             return Err(ProposalValidationError::InvalidVotingPeriod);
         }
 
@@ -179,15 +213,21 @@ impl ProposalValidator {
     }
 
     /// Validate proposal content
-    fn validate_content(&self, proposal: &GovernanceProposal) -> Result<(), ProposalValidationError> {
+    fn validate_content(
+        &self,
+        proposal: &GovernanceProposal,
+    ) -> Result<(), ProposalValidationError> {
         // Validate title length
-        if proposal.title.len() < self.config.min_title_length || 
-           proposal.title.len() > self.config.max_title_length {
+        if proposal.title.len() < self.config.min_title_length
+            || proposal.title.len() > self.config.max_title_length
+        {
             return Err(ProposalValidationError::InvalidContent);
         }
 
         // Check for valid characters in title
-        if !proposal.title.chars().all(|c| c.is_ascii() && (c.is_alphanumeric() || c.is_whitespace() || ".,!?-_()[]{}".contains(c))) {
+        if !proposal.title.chars().all(|c| {
+            c.is_ascii() && (c.is_alphanumeric() || c.is_whitespace() || ".,!?-_()[]{}".contains(c))
+        }) {
             return Err(ProposalValidationError::InvalidContent);
         }
 
@@ -236,7 +276,10 @@ impl ProposalValidator {
                 }
             }
             ProposalType::CommunityFund => {
-                if proposal.recipient_address.is_none() || proposal.amount.is_none() || proposal.project_description.is_none() {
+                if proposal.recipient_address.is_none()
+                    || proposal.amount.is_none()
+                    || proposal.project_description.is_none()
+                {
                     return Err(ProposalValidationError::MissingCommunityFundDetails);
                 }
                 if proposal.amount.unwrap_or(0) == 0 {
@@ -249,14 +292,18 @@ impl ProposalValidator {
     }
 
     /// Validate parameter change proposals
-    fn validate_parameter_change(&self, proposal: &GovernanceProposal) -> Result<(), ProposalValidationError> {
+    fn validate_parameter_change(
+        &self,
+        proposal: &GovernanceProposal,
+    ) -> Result<(), ProposalValidationError> {
         let target_param = proposal.target_parameter.as_ref().unwrap();
         let new_value = proposal.new_value.as_ref().unwrap();
 
         match target_param.as_str() {
             "block_time" => {
                 if let Ok(time) = new_value.parse::<u64>() {
-                    if time < 60 || time > 3600 { // 1 minute to 1 hour
+                    if time < 60 || time > 3600 {
+                        // 1 minute to 1 hour
                         return Err(ProposalValidationError::InvalidParameterChange);
                     }
                 } else {
@@ -265,7 +312,8 @@ impl ProposalValidator {
             }
             "max_block_size" => {
                 if let Ok(size) = new_value.parse::<u64>() {
-                    if size < 1_000_000 || size > 100_000_000 { // 1MB to 100MB
+                    if size < 1_000_000 || size > 100_000_000 {
+                        // 1MB to 100MB
                         return Err(ProposalValidationError::InvalidParameterChange);
                     }
                 } else {
@@ -274,7 +322,8 @@ impl ProposalValidator {
             }
             "difficulty_adjustment_window" => {
                 if let Ok(window) = new_value.parse::<u64>() {
-                    if window < 10 || window > 10000 { // 10 to 10000 blocks
+                    if window < 10 || window > 10000 {
+                        // 10 to 10000 blocks
                         return Err(ProposalValidationError::InvalidParameterChange);
                     }
                 } else {
@@ -283,7 +332,8 @@ impl ProposalValidator {
             }
             "masternode_collateral" => {
                 if let Ok(collateral) = new_value.parse::<u64>() {
-                    if collateral < 100_000_000 || collateral > 100_000_000_000 { // 100 to 100k RUST
+                    if collateral < 100_000_000 || collateral > 100_000_000_000 {
+                        // 100 to 100k RUST
                         return Err(ProposalValidationError::InvalidParameterChange);
                     }
                 } else {
@@ -300,14 +350,19 @@ impl ProposalValidator {
     }
 
     /// Validate collateral requirements
-    fn validate_collateral(&self, proposal: &GovernanceProposal) -> Result<(), ProposalValidationError> {
+    fn validate_collateral(
+        &self,
+        proposal: &GovernanceProposal,
+    ) -> Result<(), ProposalValidationError> {
         // Check that proposal has inputs (collateral)
         if proposal.inputs.is_empty() {
             return Err(ProposalValidationError::InsufficientCollateral);
         }
 
         // Calculate total input value (simplified - would need UTXO lookup)
-        let total_collateral = proposal.outputs.iter()
+        let total_collateral = proposal
+            .outputs
+            .iter()
             .map(|output| output.value)
             .sum::<u64>();
 
@@ -319,10 +374,13 @@ impl ProposalValidator {
     }
 
     /// Validate proposal signature
-    fn validate_signature(&self, _proposal: &GovernanceProposal) -> Result<(), ProposalValidationError> {
+    fn validate_signature(
+        &self,
+        _proposal: &GovernanceProposal,
+    ) -> Result<(), ProposalValidationError> {
         // In a real implementation, this would verify the Ed25519 signature
         // against the proposer's public key and the proposal content
-        
+
         // For now, just check that signature is not empty
         if _proposal.proposer_signature.bytes == [0u8; 64] {
             return Err(ProposalValidationError::InvalidSignature);
@@ -339,8 +397,9 @@ impl ProposalValidator {
     ) -> Result<(), ProposalValidationError> {
         for active in active_proposals {
             // Check for parameter change conflicts
-            if proposal.proposal_type == ProposalType::ParameterChange &&
-               active.proposal_type == ProposalType::ParameterChange {
+            if proposal.proposal_type == ProposalType::ParameterChange
+                && active.proposal_type == ProposalType::ParameterChange
+            {
                 if proposal.target_parameter == active.target_parameter {
                     return Err(ProposalValidationError::ConflictingProposal);
                 }
@@ -349,9 +408,10 @@ impl ProposalValidator {
             // Check for overlapping voting periods on similar proposals
             let proposal_period = proposal.start_block_height..=proposal.end_block_height;
             let active_period = active.start_block_height..=active.end_block_height;
-            
-            if proposal_period.start() <= active_period.end() && 
-               proposal_period.end() >= active_period.start() {
+
+            if proposal_period.start() <= active_period.end()
+                && proposal_period.end() >= active_period.start()
+            {
                 // Overlapping periods - check if proposals are similar
                 if self.are_proposals_similar(proposal, active) {
                     return Err(ProposalValidationError::ConflictingProposal);
@@ -363,24 +423,30 @@ impl ProposalValidator {
     }
 
     /// Check if two proposals are similar enough to conflict
-    fn are_proposals_similar(&self, proposal1: &GovernanceProposal, proposal2: &GovernanceProposal) -> bool {
+    fn are_proposals_similar(
+        &self,
+        proposal1: &GovernanceProposal,
+        proposal2: &GovernanceProposal,
+    ) -> bool {
         // Same type and same target parameter
         if proposal1.proposal_type == proposal2.proposal_type {
             match proposal1.proposal_type {
-                ProposalType::ProtocolUpgrade => proposal1.code_change_hash == proposal2.code_change_hash,
+                ProposalType::ProtocolUpgrade => {
+                    proposal1.code_change_hash == proposal2.code_change_hash
+                }
                 ProposalType::ParameterChange => {
-                    proposal1.target_parameter == proposal2.target_parameter &&
-                    proposal1.new_value == proposal2.new_value
+                    proposal1.target_parameter == proposal2.target_parameter
+                        && proposal1.new_value == proposal2.new_value
                 }
                 ProposalType::TreasurySpend => {
-                    proposal1.recipient_address == proposal2.recipient_address &&
-                    proposal1.amount == proposal2.amount
+                    proposal1.recipient_address == proposal2.recipient_address
+                        && proposal1.amount == proposal2.amount
                 }
                 ProposalType::BugFix => proposal1.bug_description == proposal2.bug_description,
                 ProposalType::CommunityFund => {
-                    proposal1.recipient_address == proposal2.recipient_address &&
-                    proposal1.amount == proposal2.amount &&
-                    proposal1.project_description == proposal2.project_description
+                    proposal1.recipient_address == proposal2.recipient_address
+                        && proposal1.amount == proposal2.amount
+                        && proposal1.project_description == proposal2.project_description
                 }
             }
         } else {

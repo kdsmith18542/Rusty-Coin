@@ -1,13 +1,13 @@
 //! Peer Discovery Implementation
-//! 
+//!
 //! Implements peer discovery mechanisms for the Rusty Coin network.
 
-use libp2p::PeerId;
-use libp2p::kad::{Behaviour as Kademlia, Event as KademliaEvent, store::MemoryStore};
-use libp2p::mdns::tokio::{Behaviour as Mdns};
+use libp2p::kad::{store::MemoryStore, Behaviour as Kademlia, Event as KademliaEvent};
+use libp2p::mdns::tokio::Behaviour as Mdns;
 use libp2p::mdns::Event as MdnsEvent;
-use libp2p::Multiaddr;
 use libp2p::swarm::NetworkBehaviour;
+use libp2p::Multiaddr;
+use libp2p::PeerId;
 use std::time::Duration;
 use thiserror::Error;
 
@@ -107,14 +107,14 @@ impl PeerDiscovery {
         }
         let mdns = Mdns::new(Default::default(), local_peer_id)
             .map_err(|e| DiscoveryError::Mdns(e.to_string()))?;
-        Ok(Self {
-            kademlia,
-            mdns,
-        })
+        Ok(Self { kademlia, mdns })
     }
     /// Bootstrap the Kademlia DHT
     pub fn bootstrap(&mut self) -> Result<(), DiscoveryError> {
-        let _query_id = self.kademlia.bootstrap().map_err(|e| DiscoveryError::Kademlia(e.to_string()))?;
+        let _query_id = self
+            .kademlia
+            .bootstrap()
+            .map_err(|e| DiscoveryError::Kademlia(e.to_string()))?;
         Ok(())
     }
     /// Start discovering peers
@@ -126,7 +126,11 @@ impl PeerDiscovery {
     pub fn known_peers(&mut self) -> Vec<PeerId> {
         self.kademlia
             .kbuckets()
-            .map(|b| b.iter().map(|e| e.node.key.preimage().clone()).collect::<Vec<_>>())
+            .map(|b| {
+                b.iter()
+                    .map(|e| e.node.key.preimage().clone())
+                    .collect::<Vec<_>>()
+            })
             .flatten()
             .collect()
     }

@@ -1,13 +1,13 @@
 //! Adaptive Block Size Algorithm Implementation
-//! 
+//!
 //! This module implements the adaptive block size algorithm as specified in
 //! docs/specs/12_adaptive_block_size_spec.md. It dynamically adjusts the maximum
 //! allowed block size based on observed median block sizes over previous periods.
 
-use std::collections::VecDeque;
-use serde::{Serialize, Deserialize};
-use rusty_shared_types::Block;
 use crate::error::ConsensusError;
+use rusty_shared_types::Block;
+use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 
 /// Algorithm parameters for adaptive block size
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,7 +64,7 @@ impl AdaptiveBlockSizeCalculator {
     /// Add a new block size to the calculation
     pub fn add_block_size(&mut self, block_size: u64) {
         self.block_sizes.push_back(block_size);
-        
+
         // Keep only the required number of blocks for median calculation
         while self.block_sizes.len() > self.params.median_calculation_period_blocks as usize {
             self.block_sizes.pop_front();
@@ -152,11 +152,13 @@ impl AdaptiveBlockSizeCalculator {
     /// Validate a block against adaptive size limits
     pub fn validate_block_size(&self, block: &Block) -> Result<(), ConsensusError> {
         let block_size = self.calculate_block_size(block)?;
-        
+
         if block_size > self.current_adaptive_max_size {
             return Err(ConsensusError::BlockTooLarge(
-                block_size as usize,
-                self.current_adaptive_max_size as usize,
+                block_size.try_into().unwrap_or(usize::MAX),
+                self.current_adaptive_max_size
+                    .try_into()
+                    .unwrap_or(usize::MAX),
             ));
         }
 
@@ -171,13 +173,17 @@ impl AdaptiveBlockSizeCalculator {
     }
 
     /// Update calculator with a new block
-    pub fn update_with_block(&mut self, block: &Block, block_height: u64) -> Result<(), ConsensusError> {
+    pub fn update_with_block(
+        &mut self,
+        block: &Block,
+        block_height: u64,
+    ) -> Result<(), ConsensusError> {
         let block_size = self.calculate_block_size(block)?;
         self.add_block_size(block_size);
-        
+
         // Recalculate adaptive max size if needed
         self.calculate_adaptive_max_block_size(block_height);
-        
+
         Ok(())
     }
 
@@ -201,13 +207,13 @@ impl AdaptiveBlockSizeCalculator {
         current_height: u64,
     ) -> Result<Self, ConsensusError> {
         let mut calculator = Self::new(params);
-        
+
         // Add block sizes from history
         for (i, block) in blocks.iter().enumerate() {
             let block_height = current_height.saturating_sub(blocks.len() as u64 - 1 - i as u64);
             calculator.update_with_block(block, block_height)?;
         }
-        
+
         Ok(calculator)
     }
 
@@ -254,8 +260,9 @@ pub struct AdaptiveBlockSizeStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rusty_shared_types::{BlockHeader, Transaction, TxVersion};
+    use rusty_shared_types::{BlockHeader, Transaction};
 
+    #[allow(dead_code)]
     fn create_test_block(size_hint: u64) -> Block {
         let header = BlockHeader {
             version: 1,
@@ -270,18 +277,18 @@ mod tests {
 
         // Create transactions to approximate desired size
         let mut transactions = vec![];
-        let mut current_size = bincode::serialize(&header)
-            .unwrap().len() as u64;
+        let mut current_size = bincode::serialize(&header).unwrap().len() as u64;
 
         while current_size < size_hint {
-            let tx = Transaction {
-                version: TxVersion::V1,
+            let tx = Transaction::Standard {
+                version: 1,
                 inputs: vec![],
                 outputs: vec![],
                 lock_time: 0,
+                fee: 0,
+                witness: vec![],
             };
-            let tx_size = bincode::serialize(&tx)
-                .unwrap().len() as u64;
+            let tx_size = bincode::serialize(&tx).unwrap().len() as u64;
             transactions.push(tx);
             current_size += tx_size;
         }

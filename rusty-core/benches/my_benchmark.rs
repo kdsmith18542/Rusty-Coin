@@ -1,10 +1,12 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rusty_core::consensus::blockchain::Blockchain;
 use rusty_core::types::{
-    Block, BlockHeader, Transaction, TxInput, TxOutput,
-    Hash, PublicKey, Signature, TicketId, OutPoint
+    Block, BlockHeader, Hash, OutPoint, PublicKey, Signature, TicketId, Transaction, TxInput,
+    TxOutput,
 };
-use rusty_shared_types::governance::{GovernanceProposal, GovernanceVote, ProposalType, VoterType, VoteChoice};
+use rusty_shared_types::governance::{
+    GovernanceProposal, GovernanceVote, ProposalType, VoteChoice, VoterType,
+};
 use rusty_shared_types::ConsensusParams;
 use std::path::Path;
 use tempfile::tempdir;
@@ -28,17 +30,21 @@ fn create_test_blockchain() -> Blockchain {
 }
 
 fn create_standard_transaction(utxo_id_seed: u8, output_value: u64, fee: u64) -> Transaction {
-    let utxo_id = OutPoint { txid: dummy_hash(utxo_id_seed), vout: 0 };
+    let utxo_id = OutPoint {
+        txid: dummy_hash(utxo_id_seed),
+        vout: 0,
+    };
     Transaction::Standard {
         version: 1,
-        inputs: vec![TxInput {
-            previous_output: utxo_id,
-            script_sig: vec![0; 65],
-            sequence: 0,
+        inputs: vec![TxInput::from_outpoint(utxo_id, vec![0; 65], 0, vec![])],
+        outputs: vec![TxOutput {
+            value: output_value,
+            script_pubkey: vec![2],
+            memo: None,
         }],
-        outputs: vec![TxOutput { value: output_value, script_pubkey: vec![2] }],
         lock_time: 0,
         fee,
+        witness: vec![],
     }
 }
 
@@ -46,9 +52,11 @@ fn create_coinbase_transaction(reward_value: u64, miner_address: Vec<u8>) -> Tra
     Transaction::Coinbase {
         version: 1,
         inputs: vec![], // Coinbase transactions have no inputs
-        outputs: vec![
-            TxOutput { value: reward_value, script_pubkey: miner_address, memo: None },
-        ],
+        outputs: vec![TxOutput {
+            value: reward_value,
+            script_pubkey: miner_address,
+            memo: None,
+        }],
         lock_time: 0,
         witness: vec![],
     }
@@ -56,7 +64,10 @@ fn create_coinbase_transaction(reward_value: u64, miner_address: Vec<u8>) -> Tra
 
 fn create_masternode_register_transaction(mn_id_seed: u8) -> Transaction {
     let mn_identity = rusty_shared_types::MasternodeIdentity {
-        collateral_outpoint: OutPoint { txid: dummy_hash(mn_id_seed), vout: 0 },
+        collateral_outpoint: OutPoint {
+            txid: dummy_hash(mn_id_seed),
+            vout: 0,
+        },
         operator_public_key: dummy_public_key(mn_id_seed + 1).to_vec(),
         collateral_ownership_public_key: dummy_public_key(mn_id_seed + 2).to_vec(),
         network_address: format!("127.0.0.1:{}", 9000 + mn_id_seed),
@@ -71,8 +82,15 @@ fn create_masternode_register_transaction(mn_id_seed: u8) -> Transaction {
     }
 }
 
-fn create_masternode_collateral_transaction(utxo_id_seed: u8, collateral_amount: u64, mn_id_seed: u8) -> Transaction {
-    let utxo_id = OutPoint { txid: dummy_hash(utxo_id_seed), vout: 0 };
+fn create_masternode_collateral_transaction(
+    utxo_id_seed: u8,
+    collateral_amount: u64,
+    mn_id_seed: u8,
+) -> Transaction {
+    let utxo_id = OutPoint {
+        txid: dummy_hash(utxo_id_seed),
+        vout: 0,
+    };
     let mn_identity = rusty_shared_types::MasternodeIdentity {
         collateral_outpoint: utxo_id.clone(),
         operator_public_key: dummy_public_key(mn_id_seed + 1).to_vec(),
@@ -81,15 +99,12 @@ fn create_masternode_collateral_transaction(utxo_id_seed: u8, collateral_amount:
     };
     Transaction::MasternodeCollateral {
         version: 1,
-        inputs: vec![TxInput {
-            previous_output: utxo_id,
-            script_sig: vec![0; 65],
-            sequence: 0,
-            witness: vec![],
+        inputs: vec![TxInput::from_outpoint(utxo_id, vec![0; 65], 0, vec![])],
+        outputs: vec![TxOutput {
+            value: collateral_amount,
+            script_pubkey: vec![1],
+            memo: None,
         }],
-        outputs: vec![
-            TxOutput { value: collateral_amount, script_pubkey: vec![1], memo: None },
-        ],
         masternode_identity: mn_identity,
         collateral_amount,
         lock_time: 0,
@@ -97,19 +112,23 @@ fn create_masternode_collateral_transaction(utxo_id_seed: u8, collateral_amount:
     }
 }
 
-fn create_ticket_purchase_transaction(utxo_id_seed: u8, ticket_price: u64, ticket_address_seed: u8) -> Transaction {
-    let utxo_id = OutPoint { txid: dummy_hash(utxo_id_seed), vout: 0 };
+fn create_ticket_purchase_transaction(
+    utxo_id_seed: u8,
+    ticket_price: u64,
+    ticket_address_seed: u8,
+) -> Transaction {
+    let utxo_id = OutPoint {
+        txid: dummy_hash(utxo_id_seed),
+        vout: 0,
+    };
     Transaction::TicketPurchase {
         version: 1,
-        inputs: vec![TxInput {
-            previous_output: utxo_id,
-            script_sig: vec![0; 65],
-            sequence: 0,
-            witness: vec![],
+        inputs: vec![TxInput::from_outpoint(utxo_id, vec![0; 65], 0, vec![])],
+        outputs: vec![TxOutput {
+            value: ticket_price,
+            script_pubkey: vec![1],
+            memo: None,
         }],
-        outputs: vec![
-            TxOutput { value: ticket_price, script_pubkey: vec![1], memo: None },
-        ],
         ticket_id: dummy_hash(ticket_address_seed + 1),
         locked_amount: ticket_price,
         lock_time: 0,
@@ -119,19 +138,23 @@ fn create_ticket_purchase_transaction(utxo_id_seed: u8, ticket_price: u64, ticke
     }
 }
 
-fn create_ticket_redemption_transaction(utxo_id_seed: u8, ticket_id_seed: u8, redeemed_value: u64) -> Transaction {
-    let utxo_id = OutPoint { txid: dummy_hash(utxo_id_seed), vout: 0 };
+fn create_ticket_redemption_transaction(
+    utxo_id_seed: u8,
+    ticket_id_seed: u8,
+    redeemed_value: u64,
+) -> Transaction {
+    let utxo_id = OutPoint {
+        txid: dummy_hash(utxo_id_seed),
+        vout: 0,
+    };
     Transaction::TicketRedemption {
         version: 1,
-        inputs: vec![TxInput {
-            previous_output: utxo_id,
-            script_sig: vec![0; 65],
-            sequence: 0,
-            witness: vec![],
+        inputs: vec![TxInput::from_outpoint(utxo_id, vec![0; 65], 0, vec![])],
+        outputs: vec![TxOutput {
+            value: redeemed_value,
+            script_pubkey: vec![1],
+            memo: None,
         }],
-        outputs: vec![
-            TxOutput { value: redeemed_value, script_pubkey: vec![1], memo: None },
-        ],
         ticket_id: dummy_hash(ticket_id_seed),
         lock_time: 0,
         fee: 10,
@@ -153,7 +176,10 @@ fn create_governance_proposal_transaction(proposal_id_seed: u8, stake_amount: u6
         new_value: None,
         proposer_signature: dummy_signature(proposal_id_seed + 30),
         inputs: vec![],
-        outputs: vec![TxOutput { value: stake_amount, script_pubkey: vec![] }],
+        outputs: vec![TxOutput {
+            value: stake_amount,
+            script_pubkey: vec![],
+        }],
         lock_time: 0,
         witness: vec![],
     };
@@ -175,7 +201,11 @@ fn create_governance_vote_transaction(proposal_id_seed: u8, voter_id_seed: u8) -
     Transaction::GovernanceVote(vote)
 }
 
-fn create_dummy_block(blockchain: &mut Blockchain, height: u64, transactions: Vec<Transaction>) -> Block {
+fn create_dummy_block(
+    blockchain: &mut Blockchain,
+    height: u64,
+    transactions: Vec<Transaction>,
+) -> Block {
     let previous_block_hash = blockchain.tip;
     let current_height = blockchain.get_current_block_height().unwrap();
 
@@ -197,12 +227,15 @@ fn create_dummy_block(blockchain: &mut Blockchain, height: u64, transactions: Ve
     };
 
     block.header.merkle_root = block.calculate_merkle_root();
-    block.header.state_root = blockchain.state.calculate_state_root(
-        &blockchain.utxo_set,
-        &blockchain.live_tickets,
-        &blockchain.state.masternode_list,
-        &blockchain.active_proposals,
-    ).unwrap();
+    block.header.state_root = blockchain
+        .state
+        .calculate_state_root(
+            &blockchain.utxo_set,
+            &blockchain.live_tickets,
+            &blockchain.state.masternode_list,
+            &blockchain.active_proposals,
+        )
+        .unwrap();
     block
 }
 
@@ -211,30 +244,45 @@ fn criterion_benchmark(c: &mut Criterion) {
     let current_height = 1000;
 
     // Setup for transaction validation benchmarks
-    let utxo_id = OutPoint { txid: dummy_hash(100), vout: 0 };
+    let utxo_id = OutPoint {
+        txid: dummy_hash(100),
+        vout: 0,
+    };
     let utxo = rusty_shared_types::Utxo {
-        output: TxOutput { value: 10000_000_000, script_pubkey: vec![1], memo: None },
+        output: TxOutput {
+            value: 10000_000_000,
+            script_pubkey: vec![1],
+            memo: None,
+        },
         is_coinbase: false,
         creation_height: 1,
     };
     blockchain.utxo_set.add_utxo(utxo_id.clone(), utxo);
 
     let standard_tx = create_standard_transaction(1, 9_000_000_000, 1_000_000_000);
-    let governance_proposal_tx = create_governance_proposal_transaction(2, blockchain.params.proposal_stake_amount);
+    let governance_proposal_tx =
+        create_governance_proposal_transaction(2, blockchain.params.proposal_stake_amount);
     let governance_vote_tx = create_governance_vote_transaction(3, 4);
 
-    let coinbase_tx_val = create_coinbase_transaction(blockchain.params.initial_block_reward, blockchain.params.miner_address.clone());
+    let coinbase_tx_val = create_coinbase_transaction(
+        blockchain.params.initial_block_reward,
+        blockchain.params.miner_address.clone(),
+    );
     let masternode_register_tx_val = create_masternode_register_transaction(5);
     let masternode_collateral_tx_val = create_masternode_collateral_transaction(6, 10000, 7);
-    let ticket_purchase_tx_val = create_ticket_purchase_transaction(8, blockchain.params.ticket_price, 9);
-    let ticket_redemption_tx_val = create_ticket_redemption_transaction(10, 11, blockchain.params.ticket_price - 10);
+    let ticket_purchase_tx_val =
+        create_ticket_purchase_transaction(8, blockchain.params.ticket_price, 9);
+    let ticket_redemption_tx_val =
+        create_ticket_redemption_transaction(10, 11, blockchain.params.ticket_price - 10);
 
     c.bench_function("validate_standard_transaction", |b| {
         b.iter(|| black_box(blockchain.validate_transaction(&standard_tx, current_height)))
     });
 
     c.bench_function("validate_governance_proposal_transaction", |b| {
-        b.iter(|| black_box(blockchain.validate_transaction(&governance_proposal_tx, current_height)))
+        b.iter(|| {
+            black_box(blockchain.validate_transaction(&governance_proposal_tx, current_height))
+        })
     });
 
     c.bench_function("validate_governance_vote_transaction", |b| {
@@ -246,22 +294,33 @@ fn criterion_benchmark(c: &mut Criterion) {
     });
 
     c.bench_function("validate_masternode_register_transaction", |b| {
-        b.iter(|| black_box(blockchain.validate_transaction(&masternode_register_tx_val, current_height)))
+        b.iter(|| {
+            black_box(blockchain.validate_transaction(&masternode_register_tx_val, current_height))
+        })
     });
 
     c.bench_function("validate_masternode_collateral_transaction", |b| {
-        b.iter(|| black_box(blockchain.validate_transaction(&masternode_collateral_tx_val, current_height)))
+        b.iter(|| {
+            black_box(
+                blockchain.validate_transaction(&masternode_collateral_tx_val, current_height),
+            )
+        })
     });
 
     c.bench_function("validate_ticket_purchase_transaction", |b| {
-        b.iter(|| black_box(blockchain.validate_transaction(&ticket_purchase_tx_val, current_height)))
+        b.iter(|| {
+            black_box(blockchain.validate_transaction(&ticket_purchase_tx_val, current_height))
+        })
     });
 
     c.bench_function("validate_ticket_redemption_transaction", |b| {
         // Setup for ticket redemption: needs a live ticket and corresponding UTXO
         let mut temp_blockchain = create_test_blockchain();
         let ticket_id_for_bench = rusty_shared_types::TicketId(dummy_hash(100));
-        let outpoint_for_bench = rusty_shared_types::OutPoint { txid: dummy_hash(101), vout: 0 };
+        let outpoint_for_bench = rusty_shared_types::OutPoint {
+            txid: dummy_hash(101),
+            vout: 0,
+        };
         let ticket_value_for_bench = temp_blockchain.params.ticket_price;
         let ticket_public_key_for_bench = dummy_public_key(102);
         let ticket_for_bench = rusty_shared_types::Ticket {
@@ -275,26 +334,43 @@ fn criterion_benchmark(c: &mut Criterion) {
         };
         temp_blockchain.live_tickets.add_ticket(ticket_for_bench);
         let utxo_for_bench = rusty_shared_types::Utxo {
-            output: TxOutput { value: ticket_value_for_bench, script_pubkey: vec![1], memo: None },
+            output: TxOutput {
+                value: ticket_value_for_bench,
+                script_pubkey: vec![1],
+                memo: None,
+            },
             is_coinbase: false,
             creation_height: current_height - temp_blockchain.params.ticket_maturity as u64,
         };
-        temp_blockchain.utxo_set.add_utxo(outpoint_for_bench.clone(), utxo_for_bench);
+        temp_blockchain
+            .utxo_set
+            .add_utxo(outpoint_for_bench.clone(), utxo_for_bench);
 
-        let tx = create_ticket_redemption_transaction(outpoint_for_bench.txid[0], ticket_id_for_bench.0[0], ticket_value_for_bench - 10);
+        let tx = create_ticket_redemption_transaction(
+            outpoint_for_bench.txid[0],
+            ticket_id_for_bench.0[0],
+            ticket_value_for_bench - 10,
+        );
 
         b.iter(|| black_box(temp_blockchain.validate_transaction(&tx, current_height)))
     });
 
     // Setup for add_block benchmarks
-    let coinbase_tx = create_coinbase_transaction(blockchain.params.initial_block_reward, blockchain.params.miner_address.clone());
+    let coinbase_tx = create_coinbase_transaction(
+        blockchain.params.initial_block_reward,
+        blockchain.params.miner_address.clone(),
+    );
     let standard_tx_for_block = create_standard_transaction(100, 9_000_000_000, 1_000_000_000);
-    let governance_proposal_tx_for_block = create_governance_proposal_transaction(200, blockchain.params.proposal_stake_amount);
+    let governance_proposal_tx_for_block =
+        create_governance_proposal_transaction(200, blockchain.params.proposal_stake_amount);
     let governance_vote_tx_for_block = create_governance_vote_transaction(300, 400);
     let masternode_register_tx_for_block = create_masternode_register_transaction(500);
-    let masternode_collateral_tx_for_block = create_masternode_collateral_transaction(600, 10000, 700);
-    let ticket_purchase_tx_for_block = create_ticket_purchase_transaction(800, blockchain.params.ticket_price, 900);
-    let ticket_redemption_tx_for_block = create_ticket_redemption_transaction(1000, 1100, blockchain.params.ticket_price - 10);
+    let masternode_collateral_tx_for_block =
+        create_masternode_collateral_transaction(600, 10000, 700);
+    let ticket_purchase_tx_for_block =
+        create_ticket_purchase_transaction(800, blockchain.params.ticket_price, 900);
+    let ticket_redemption_tx_for_block =
+        create_ticket_redemption_transaction(1000, 1100, blockchain.params.ticket_price - 10);
 
     let block_with_standard_tx = create_dummy_block(
         &mut blockchain,
@@ -304,7 +380,10 @@ fn criterion_benchmark(c: &mut Criterion) {
     let block_with_governance_proposal_tx = create_dummy_block(
         &mut blockchain,
         current_height + 2,
-        vec![coinbase_tx.clone(), governance_proposal_tx_for_block.clone()],
+        vec![
+            coinbase_tx.clone(),
+            governance_proposal_tx_for_block.clone(),
+        ],
     );
     let block_with_governance_vote_tx = create_dummy_block(
         &mut blockchain,
@@ -314,12 +393,18 @@ fn criterion_benchmark(c: &mut Criterion) {
     let block_with_masternode_register_tx = create_dummy_block(
         &mut blockchain,
         current_height + 4,
-        vec![coinbase_tx.clone(), masternode_register_tx_for_block.clone()],
+        vec![
+            coinbase_tx.clone(),
+            masternode_register_tx_for_block.clone(),
+        ],
     );
     let block_with_masternode_collateral_tx = create_dummy_block(
         &mut blockchain,
         current_height + 5,
-        vec![coinbase_tx.clone(), masternode_collateral_tx_for_block.clone()],
+        vec![
+            coinbase_tx.clone(),
+            masternode_collateral_tx_for_block.clone(),
+        ],
     );
     let block_with_ticket_purchase_tx = create_dummy_block(
         &mut blockchain,
@@ -352,7 +437,7 @@ fn criterion_benchmark(c: &mut Criterion) {
             proposer_address: dummy_public_key(14),
             proposal_type: ProposalType::PROTOCOL_UPGRADE,
             start_block_height: current_height + 1,
-            end_block_height: current_height + 1 + temp_blockchain.params.voting_period_blocks -1,
+            end_block_height: current_height + 1 + temp_blockchain.params.voting_period_blocks - 1,
             title: "Benchmark Vote Proposal".to_string(),
             description_hash: dummy_hash(15),
             code_change_hash: None,
@@ -360,11 +445,17 @@ fn criterion_benchmark(c: &mut Criterion) {
             new_value: None,
             proposer_signature: dummy_signature(16),
             inputs: vec![],
-            outputs: vec![TxOutput { value: temp_blockchain.params.proposal_stake_amount, script_pubkey: vec![] }],
+            outputs: vec![TxOutput {
+                value: temp_blockchain.params.proposal_stake_amount,
+                script_pubkey: vec![],
+            }],
             lock_time: 0,
             witness: vec![],
         };
-        temp_blockchain.active_proposals.add_proposal(proposal_for_vote).unwrap();
+        temp_blockchain
+            .active_proposals
+            .add_proposal(proposal_for_vote)
+            .unwrap();
 
         b.iter(|| black_box(temp_blockchain.add_block(block_with_governance_vote_tx.clone())))
     });
@@ -377,26 +468,44 @@ fn criterion_benchmark(c: &mut Criterion) {
     c.bench_function("add_block_with_masternode_collateral_transaction", |b| {
         let mut temp_blockchain = create_test_blockchain();
         // To validate MasternodeCollateralTx, the UTXO must exist in the UTXO set.
-        let utxo_id_for_bench = OutPoint { txid: dummy_hash(100), vout: 0 };
+        let utxo_id_for_bench = OutPoint {
+            txid: dummy_hash(100),
+            vout: 0,
+        };
         let utxo_for_bench = rusty_shared_types::Utxo {
-            output: TxOutput { value: 10000, script_pubkey: vec![1], memo: None },
+            output: TxOutput {
+                value: 10000,
+                script_pubkey: vec![1],
+                memo: None,
+            },
             is_coinbase: false,
             creation_height: 1,
         };
-        temp_blockchain.utxo_set.add_utxo(utxo_id_for_bench, utxo_for_bench);
+        temp_blockchain
+            .utxo_set
+            .add_utxo(utxo_id_for_bench, utxo_for_bench);
         b.iter(|| black_box(temp_blockchain.add_block(block_with_masternode_collateral_tx.clone())))
     });
 
     c.bench_function("add_block_with_ticket_purchase_transaction", |b| {
         let mut temp_blockchain = create_test_blockchain();
         // To validate TicketPurchaseTx, the UTXO must exist in the UTXO set.
-        let utxo_id_for_bench = OutPoint { txid: dummy_hash(800), vout: 0 };
+        let utxo_id_for_bench = OutPoint {
+            txid: dummy_hash(800),
+            vout: 0,
+        };
         let utxo_for_bench = rusty_shared_types::Utxo {
-            output: TxOutput { value: temp_blockchain.params.ticket_price, script_pubkey: vec![1], memo: None },
+            output: TxOutput {
+                value: temp_blockchain.params.ticket_price,
+                script_pubkey: vec![1],
+                memo: None,
+            },
             is_coinbase: false,
             creation_height: 1,
         };
-        temp_blockchain.utxo_set.add_utxo(utxo_id_for_bench, utxo_for_bench);
+        temp_blockchain
+            .utxo_set
+            .add_utxo(utxo_id_for_bench, utxo_for_bench);
         b.iter(|| black_box(temp_blockchain.add_block(block_with_ticket_purchase_tx.clone())))
     });
 
@@ -404,7 +513,10 @@ fn criterion_benchmark(c: &mut Criterion) {
         let mut temp_blockchain = create_test_blockchain();
         // Setup for ticket redemption: needs a live ticket and corresponding UTXO
         let ticket_id_for_bench = rusty_shared_types::TicketId(dummy_hash(1000));
-        let outpoint_for_bench = rusty_shared_types::OutPoint { txid: dummy_hash(1001), vout: 0 };
+        let outpoint_for_bench = rusty_shared_types::OutPoint {
+            txid: dummy_hash(1001),
+            vout: 0,
+        };
         let ticket_value_for_bench = temp_blockchain.params.ticket_price;
         let ticket_public_key_for_bench = dummy_public_key(1002);
         let ticket_for_bench = rusty_shared_types::Ticket {
@@ -418,15 +530,20 @@ fn criterion_benchmark(c: &mut Criterion) {
         };
         temp_blockchain.live_tickets.add_ticket(ticket_for_bench);
         let utxo_for_bench = rusty_shared_types::Utxo {
-            output: TxOutput { value: ticket_value_for_bench, script_pubkey: vec![1], memo: None },
+            output: TxOutput {
+                value: ticket_value_for_bench,
+                script_pubkey: vec![1],
+                memo: None,
+            },
             is_coinbase: false,
             creation_height: current_height - temp_blockchain.params.ticket_maturity as u64,
         };
-        temp_blockchain.utxo_set.add_utxo(outpoint_for_bench.clone(), utxo_for_bench);
+        temp_blockchain
+            .utxo_set
+            .add_utxo(outpoint_for_bench.clone(), utxo_for_bench);
 
         b.iter(|| black_box(temp_blockchain.add_block(block_with_ticket_redemption_tx.clone())))
     });
-
 }
 
 criterion_group!(benches, criterion_benchmark);

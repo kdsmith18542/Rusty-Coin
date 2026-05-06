@@ -82,15 +82,20 @@ impl From<FuzzTransaction> for Transaction {
 
 impl From<FuzzTxInput> for TxInput {
     fn from(fuzz_input: FuzzTxInput) -> Self {
-        TxInput {
-            previous_output: OutPoint {
+        TxInput::from_outpoint(
+
+            OutPoint {
                 txid: fuzz_input.previous_output_txid,
                 vout: fuzz_input.previous_output_vout,
             },
-            script_sig: fuzz_input.script_sig,
-            sequence: fuzz_input.sequence,
-            witness: Vec::new(),
-        }
+
+            fuzz_input.script_sig,
+
+            fuzz_input.sequence,
+
+            Vec::new(),
+
+        )
     }
 }
 

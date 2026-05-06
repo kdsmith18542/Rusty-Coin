@@ -1,14 +1,14 @@
 //! State proof manager for light clients
-//! 
+//!
 //! This module provides high-level APIs for generating and verifying
 //! state proofs for light client operations.
 
+use log::info;
 use std::collections::HashMap;
-use log::{info, warn, error, debug};
 
-use rusty_shared_types::{Hash, OutPoint, Utxo, TicketId};
 use crate::consensus::error::ConsensusError;
-use crate::state::{MerklePatriciaTrie, MerkleProof, BatchMerkleProof, RangeProof, TicketData};
+use crate::state::{BatchMerkleProof, MerklePatriciaTrie, MerkleProof, RangeProof, TicketData};
+use rusty_shared_types::{Hash, OutPoint, TicketId, Utxo};
 
 /// Types of state proofs that can be generated
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,10 +97,13 @@ impl StateProofManager {
     }
 
     /// Generate a proof for a single UTXO
-    pub fn generate_utxo_proof(&self, outpoint: &OutPoint) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_utxo_proof(
+        &self,
+        outpoint: &OutPoint,
+    ) -> Result<ProofResponse, ConsensusError> {
         let key = self.encode_utxo_key(outpoint);
         let proof = self.trie.generate_proof(&key)?;
-        
+
         Ok(ProofResponse {
             proof_type: ProofType::UtxoProof,
             proof_data: ProofData::Single(proof.clone()),
@@ -111,21 +114,25 @@ impl StateProofManager {
     }
 
     /// Generate a proof for multiple UTXOs efficiently
-    pub fn generate_utxo_batch_proof(&self, outpoints: &[OutPoint]) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_utxo_batch_proof(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> Result<ProofResponse, ConsensusError> {
         if outpoints.len() > self.config.max_batch_size {
             return Err(ConsensusError::TrieError(format!(
-                "Batch size {} exceeds maximum {}", 
-                outpoints.len(), 
+                "Batch size {} exceeds maximum {}",
+                outpoints.len(),
                 self.config.max_batch_size
             )));
         }
 
-        let keys: Vec<Vec<u8>> = outpoints.iter()
+        let keys: Vec<Vec<u8>> = outpoints
+            .iter()
             .map(|outpoint| self.encode_utxo_key(outpoint))
             .collect();
 
         let batch_proof = self.trie.generate_batch_proof(&keys)?;
-        
+
         Ok(ProofResponse {
             proof_type: ProofType::BatchProof,
             proof_data: ProofData::Batch(batch_proof.clone()),
@@ -136,10 +143,13 @@ impl StateProofManager {
     }
 
     /// Generate a proof for a ticket
-    pub fn generate_ticket_proof(&self, ticket_id: &TicketId) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_ticket_proof(
+        &self,
+        ticket_id: &TicketId,
+    ) -> Result<ProofResponse, ConsensusError> {
         let key = self.encode_ticket_key(ticket_id);
         let proof = self.trie.generate_proof(&key)?;
-        
+
         Ok(ProofResponse {
             proof_type: ProofType::TicketProof,
             proof_data: ProofData::Single(proof.clone()),
@@ -151,23 +161,23 @@ impl StateProofManager {
 
     /// Generate a range proof for UTXOs within a specific range
     pub fn generate_utxo_range_proof(
-        &self, 
-        start_outpoint: &OutPoint, 
-        end_outpoint: &OutPoint
+        &self,
+        start_outpoint: &OutPoint,
+        end_outpoint: &OutPoint,
     ) -> Result<ProofResponse, ConsensusError> {
         let start_key = self.encode_utxo_key(start_outpoint);
         let end_key = self.encode_utxo_key(end_outpoint);
-        
+
         let range_proof = self.trie.generate_range_proof(&start_key, &end_key)?;
-        
+
         if range_proof.included_keys.len() > self.config.max_range_size {
             return Err(ConsensusError::TrieError(format!(
-                "Range size {} exceeds maximum {}", 
-                range_proof.included_keys.len(), 
+                "Range size {} exceeds maximum {}",
+                range_proof.included_keys.len(),
                 self.config.max_range_size
             )));
         }
-        
+
         Ok(ProofResponse {
             proof_type: ProofType::RangeProof,
             proof_data: ProofData::Range(range_proof.clone()),
@@ -178,10 +188,13 @@ impl StateProofManager {
     }
 
     /// Generate a proof for masternode existence
-    pub fn generate_masternode_proof(&self, masternode_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_masternode_proof(
+        &self,
+        masternode_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         let key = self.encode_masternode_key(masternode_key);
         let proof = self.trie.generate_proof(&key)?;
-        
+
         Ok(ProofResponse {
             proof_type: ProofType::MasternodeProof,
             proof_data: ProofData::Single(proof.clone()),
@@ -192,10 +205,13 @@ impl StateProofManager {
     }
 
     /// Generate a proof for governance proposal state
-    pub fn generate_governance_proof(&self, proposal_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+    pub fn generate_governance_proof(
+        &self,
+        proposal_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         let key = self.encode_proposal_key(proposal_key);
         let proof = self.trie.generate_proof(&key)?;
-        
+
         Ok(ProofResponse {
             proof_type: ProofType::GovernanceProof,
             proof_data: ProofData::Single(proof.clone()),
@@ -207,13 +223,15 @@ impl StateProofManager {
 
     /// Verify a UTXO proof
     pub fn verify_utxo_proof(
-        &self, 
-        proof: &MerkleProof, 
-        expected_utxo: Option<&Utxo>
+        &self,
+        proof: &MerkleProof,
+        expected_utxo: Option<&Utxo>,
     ) -> Result<bool, ConsensusError> {
         let expected_value = if let Some(utxo) = expected_utxo {
-            Some(bincode::serialize(utxo)
-                .map_err(|e| ConsensusError::SerializationError(e.to_string()))?)
+            Some(
+                bincode::serialize(utxo)
+                    .map_err(|e| ConsensusError::SerializationError(e.to_string()))?,
+            )
         } else {
             None
         };
@@ -223,13 +241,15 @@ impl StateProofManager {
 
     /// Verify a ticket proof
     pub fn verify_ticket_proof(
-        &self, 
-        proof: &MerkleProof, 
-        expected_ticket: Option<&TicketData>
+        &self,
+        proof: &MerkleProof,
+        expected_ticket: Option<&TicketData>,
     ) -> Result<bool, ConsensusError> {
         let expected_value = if let Some(ticket) = expected_ticket {
-            Some(bincode::serialize(ticket)
-                .map_err(|e| ConsensusError::SerializationError(e.to_string()))?)
+            Some(
+                bincode::serialize(ticket)
+                    .map_err(|e| ConsensusError::SerializationError(e.to_string()))?,
+            )
         } else {
             None
         };
@@ -239,9 +259,9 @@ impl StateProofManager {
 
     /// Verify a batch proof
     pub fn verify_batch_proof(
-        &self, 
-        proof: &BatchMerkleProof, 
-        expected_values: &[Option<Vec<u8>>]
+        &self,
+        proof: &BatchMerkleProof,
+        expected_values: &[Option<Vec<u8>>],
     ) -> Result<bool, ConsensusError> {
         MerklePatriciaTrie::verify_batch_proof(proof, expected_values)
     }
@@ -271,15 +291,15 @@ impl StateProofManager {
 
     fn calculate_proof_size(&self, proof_data: &ProofData) -> usize {
         match proof_data {
-            ProofData::Single(proof) => {
-                bincode::serialize(proof).map(|data| data.len()).unwrap_or(0)
-            }
-            ProofData::Batch(proof) => {
-                bincode::serialize(proof).map(|data| data.len()).unwrap_or(0)
-            }
-            ProofData::Range(proof) => {
-                bincode::serialize(proof).map(|data| data.len()).unwrap_or(0)
-            }
+            ProofData::Single(proof) => bincode::serialize(proof)
+                .map(|data| data.len())
+                .unwrap_or(0),
+            ProofData::Batch(proof) => bincode::serialize(proof)
+                .map(|data| data.len())
+                .unwrap_or(0),
+            ProofData::Range(proof) => bincode::serialize(proof)
+                .map(|data| data.len())
+                .unwrap_or(0),
         }
     }
 
@@ -326,38 +346,56 @@ pub struct ProofStats {
 pub trait LightClientProofInterface {
     /// Request a UTXO proof
     fn request_utxo_proof(&self, outpoint: &OutPoint) -> Result<ProofResponse, ConsensusError>;
-    
+
     /// Request a batch of UTXO proofs
-    fn request_utxo_batch_proof(&self, outpoints: &[OutPoint]) -> Result<ProofResponse, ConsensusError>;
-    
+    fn request_utxo_batch_proof(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> Result<ProofResponse, ConsensusError>;
+
     /// Request a ticket proof
     fn request_ticket_proof(&self, ticket_id: &TicketId) -> Result<ProofResponse, ConsensusError>;
-    
+
     /// Request a masternode proof
-    fn request_masternode_proof(&self, masternode_key: &[u8]) -> Result<ProofResponse, ConsensusError>;
-    
+    fn request_masternode_proof(
+        &self,
+        masternode_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError>;
+
     /// Request a governance proof
-    fn request_governance_proof(&self, proposal_key: &[u8]) -> Result<ProofResponse, ConsensusError>;
+    fn request_governance_proof(
+        &self,
+        proposal_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError>;
 }
 
 impl LightClientProofInterface for StateProofManager {
     fn request_utxo_proof(&self, outpoint: &OutPoint) -> Result<ProofResponse, ConsensusError> {
         self.generate_utxo_proof(outpoint)
     }
-    
-    fn request_utxo_batch_proof(&self, outpoints: &[OutPoint]) -> Result<ProofResponse, ConsensusError> {
+
+    fn request_utxo_batch_proof(
+        &self,
+        outpoints: &[OutPoint],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.generate_utxo_batch_proof(outpoints)
     }
-    
+
     fn request_ticket_proof(&self, ticket_id: &TicketId) -> Result<ProofResponse, ConsensusError> {
         self.generate_ticket_proof(ticket_id)
     }
-    
-    fn request_masternode_proof(&self, masternode_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+
+    fn request_masternode_proof(
+        &self,
+        masternode_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.generate_masternode_proof(masternode_key)
     }
-    
-    fn request_governance_proof(&self, proposal_key: &[u8]) -> Result<ProofResponse, ConsensusError> {
+
+    fn request_governance_proof(
+        &self,
+        proposal_key: &[u8],
+    ) -> Result<ProofResponse, ConsensusError> {
         self.generate_governance_proof(proposal_key)
     }
 }

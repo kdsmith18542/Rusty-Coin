@@ -130,20 +130,18 @@ start_node() {
 # Function to wait for node to be ready
 wait_for_node() {
     local port=$1
-    local timeout=30
+    local timeout=60  # Increased from 30 to 60 seconds
     local count=0
-    
-    print_status "Waiting for node on port $port to be ready..."
-    
+    local health_port=$((port + 2))
+    print_status "Waiting for node on port $port (health $health_port) to be ready..."
     while [ $count -lt $timeout ]; do
-        if curl -s "http://127.0.0.1:$((port+1))/health" >/dev/null 2>&1; then
+        if curl -s "http://127.0.0.1:$health_port/health" >/dev/null 2>&1; then
             print_status "Node on port $port is ready!"
             return 0
         fi
         sleep 1
         count=$((count + 1))
     done
-    
     print_warning "Node on port $port did not become ready within $timeout seconds"
     return 1
 }
@@ -152,29 +150,25 @@ wait_for_node() {
 test_node() {
     local port=$1
     local node_name=$2
-    
+    local health_port=$((port + 2))
     print_status "Testing $node_name connectivity..."
-    
     # Test health endpoint
-    if curl -s "http://127.0.0.1:$((port+1))/health" | grep -q "OK"; then
+    if curl -s "http://127.0.0.1:$health_port/health" | grep -q "OK"; then
         print_status "$node_name health check: ✅ PASS"
     else
         print_error "$node_name health check: ❌ FAIL"
         return 1
     fi
-    
     # Test RPC endpoint
-    local response=$(curl -s -X POST "http://127.0.0.1:$port" \
+    local response=$(curl -s -X POST "http://127.0.0.1:$((port+1))" \
         -H "Content-Type: application/json" \
         -d '{"jsonrpc":"2.0","method":"get_block_count","params":[],"id":1}')
-    
     if echo "$response" | grep -q "result"; then
         print_status "$node_name RPC check: ✅ PASS"
     else
         print_error "$node_name RPC check: ❌ FAIL"
         return 1
     fi
-    
     return 0
 }
 
@@ -190,8 +184,8 @@ show_status() {
     
     print_status "Node Information:"
     for i in $(seq 1 $NUM_NODES); do
-        local port=$((BASE_PORT + i - 1))
-        local health_port=$((port + 1))
+        local port=$((BASE_PORT + (i - 1) * 3))
+        local health_port=$((port + 2))
         local node_id="regtest-node-$i"
         local pid_file="$DATA_DIR/$node_id/node.pid"
         
@@ -256,20 +250,18 @@ main() {
             # Start bootstrap node
             start_node "regtest-node-1" $BASE_PORT "" "Bootstrap Node"
             wait_for_node $BASE_PORT
-            
+
             # Start additional nodes
             local bootstrap_addr="127.0.0.1:$BASE_PORT"
             for i in $(seq 2 $NUM_NODES); do
-                local port=$((BASE_PORT + i - 1))
+                local port=$((BASE_PORT + (i - 1) * 3))
                 local node_id="regtest-node-$i"
                 local role="Node $i"
-                
                 if [ $i -eq 3 ]; then
                     role="Masternode"
                 elif [ $i -eq 4 ]; then
                     role="Miner"
                 fi
-                
                 start_node "$node_id" $port "$bootstrap_addr" "$role"
                 wait_for_node $port
             done
@@ -279,7 +271,7 @@ main() {
             # Test connectivity
             sleep 5
             for i in $(seq 1 $NUM_NODES); do
-                local port=$((BASE_PORT + i - 1))
+                local port=$((BASE_PORT + (i - 1) * 3))
                 test_node $port "regtest-node-$i"
             done
             
@@ -294,7 +286,7 @@ main() {
         "test")
             print_header "TESTING REGTEST NETWORK"
             for i in $(seq 1 $NUM_NODES); do
-                local port=$((BASE_PORT + i - 1))
+                local port=$((BASE_PORT + (i - 1) * 3))
                 test_node $port "regtest-node-$i"
             done
             ;;

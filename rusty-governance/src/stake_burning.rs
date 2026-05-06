@@ -1,24 +1,19 @@
 //! Stake burning mechanism for failed and malicious governance proposals
-//! 
+//!
 //! This module implements the collateral slashing system for governance proposals
 //! that fail to meet requirements or are deemed malicious.
 
+use log::{error, info};
 use std::collections::HashMap;
-use log::{info, warn, error, debug};
 
-use rusty_shared_types::{
-    Hash, Transaction, TxInput, TxOutput, OutPoint,
-    governance::{GovernanceProposal, ProposalType},
-    masternode::{MasternodeID, SlashingReason, MasternodeEntry},
-    ConsensusParams,
-};
 use rusty_core::consensus::state::BlockchainState;
-
-use crate::{ProposalOutcome, ProposalVotingStats, VotingConfig};
+use rusty_shared_types::{
+    governance::{GovernanceProposal, ProposalType},
+    ConsensusParams, Hash, OutPoint, Transaction, TxInput, TxOutput,
+};
 
 /// Reasons for burning proposal stakes
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum StakeBurningReason {
     /// Proposal was rejected by governance vote
     ProposalRejected,
@@ -89,8 +84,6 @@ pub struct ExecutedBurn {
     proposal_id: Hash,
     burn_amount: u64,
     reason: StakeBurningReason,
-    burn_transaction_hash: Hash,
-    execution_block_height: u64,
 }
 
 impl StakeBurningManager {
@@ -110,7 +103,7 @@ impl StakeBurningManager {
         current_block_height: u64,
         total_voting_power: u64,
         yes_votes: u64,
-        no_votes: u64,
+        _no_votes: u64,
         total_votes_cast: u64,
         consensus_params: &ConsensusParams,
     ) -> Result<Option<PendingBurn>, String> {
@@ -131,7 +124,8 @@ impl StakeBurningManager {
             Some(StakeBurningReason::MaliciousProposal)
         } else if participation_rate < self.config.min_participation_threshold {
             // Check if grace period has passed
-            let grace_period_end = proposal.end_block_height + self.config.participation_grace_period;
+            let grace_period_end =
+                proposal.end_block_height + self.config.participation_grace_period;
             if current_block_height >= grace_period_end {
                 Some(StakeBurningReason::InsufficientParticipation)
             } else {
@@ -146,8 +140,12 @@ impl StakeBurningManager {
         } else {
             // Check if proposal was rejected
             let approval_threshold = match proposal.proposal_type {
-                ProposalType::ProtocolUpgrade => consensus_params.protocol_upgrade_approval_percentage,
-                ProposalType::ParameterChange => consensus_params.parameter_change_approval_percentage,
+                ProposalType::ProtocolUpgrade => {
+                    consensus_params.protocol_upgrade_approval_percentage
+                }
+                ProposalType::ParameterChange => {
+                    consensus_params.parameter_change_approval_percentage
+                }
                 ProposalType::TreasurySpend => consensus_params.treasury_spend_approval_percentage,
                 ProposalType::BugFix => consensus_params.bug_fix_approval_percentage,
                 ProposalType::CommunityFund => consensus_params.community_fund_approval_percentage,
@@ -185,10 +183,15 @@ impl StakeBurningManager {
                 collateral_outpoint,
             };
 
-            self.pending_burns.insert(proposal.proposal_id, pending_burn.clone());
+            self.pending_burns
+                .insert(proposal.proposal_id, pending_burn.clone());
 
-            info!("Scheduled stake burn for proposal {} due to {:?}. Burn amount: {} RUST",
-                  hex::encode(proposal.proposal_id), reason, burn_amount);
+            info!(
+                "Scheduled stake burn for proposal {} due to {:?}. Burn amount: {} RUST",
+                hex::encode(proposal.proposal_id),
+                reason,
+                burn_amount
+            );
 
             Ok(Some(pending_burn))
         } else {
@@ -202,7 +205,8 @@ impl StakeBurningManager {
         current_block_height: u64,
         _blockchain_state: &mut BlockchainState,
     ) -> Result<Vec<Transaction>, String> {
-        let ready_burns: Vec<Hash> = self.pending_burns
+        let ready_burns: Vec<Hash> = self
+            .pending_burns
             .iter()
             .filter(|(_, burn)| current_block_height >= burn.scheduled_block_height)
             .map(|(id, _)| *id)
@@ -214,26 +218,30 @@ impl StakeBurningManager {
             if let Some(pending_burn) = self.pending_burns.remove(&proposal_id) {
                 match self.create_burn_transaction(&pending_burn) {
                     Ok(burn_tx) => {
-                        let tx_hash = burn_tx.txid();
-                        
+                        let _tx_hash = burn_tx.txid();
+
                         // Record the executed burn
                         let executed_burn = ExecutedBurn {
                             proposal_id: pending_burn.proposal_id,
                             burn_amount: pending_burn.burn_amount,
                             reason: pending_burn.reason.clone(),
-                            burn_transaction_hash: tx_hash,
-                            execution_block_height: current_block_height,
                         };
 
                         self.executed_burns.insert(proposal_id, executed_burn);
                         burn_transactions.push(burn_tx);
 
-                        info!("Executed stake burn for proposal {} - burned {} RUST",
-                              hex::encode(proposal_id), pending_burn.burn_amount);
+                        info!(
+                            "Executed stake burn for proposal {} - burned {} RUST",
+                            hex::encode(proposal_id),
+                            pending_burn.burn_amount
+                        );
                     }
                     Err(e) => {
-                        error!("Failed to create burn transaction for proposal {}: {}", 
-                               hex::encode(proposal_id), e);
+                        error!(
+                            "Failed to create burn transaction for proposal {}: {}",
+                            hex::encode(proposal_id),
+                            e
+                        );
                     }
                 }
             }
@@ -245,12 +253,12 @@ impl StakeBurningManager {
     /// Create a burn transaction for a pending burn
     fn create_burn_transaction(&self, pending_burn: &PendingBurn) -> Result<Transaction, String> {
         // Create input from the collateral
-        let input = TxInput {
-            previous_output: pending_burn.collateral_outpoint.clone(),
-            script_sig: vec![], // Would be filled with proper unlocking script
-            sequence: 0xffffffff,
-            witness: vec![], // Witness data for the transaction
-        };
+        let input = TxInput::from_outpoint(
+            pending_burn.collateral_outpoint.clone(),
+            vec![], // Would be filled with proper unlocking script
+            0xffffffff,
+            vec![], // Witness data for the transaction
+        );
 
         // Create burn output (unspendable)
         let burn_output = self.create_burn_output(pending_burn.burn_amount);
@@ -262,8 +270,13 @@ impl StakeBurningManager {
             let change_output = TxOutput {
                 value: change_amount,
                 script_pubkey: pending_burn.proposer_address.clone(),
-                memo: Some(format!("Partial stake return for proposal {}",
-                hex::encode(pending_burn.proposal_id)).into()),
+                memo: Some(
+                    format!(
+                        "Partial stake return for proposal {}",
+                        hex::encode(pending_burn.proposal_id)
+                    )
+                    .into(),
+                ),
             };
             outputs.push(change_output);
         }
@@ -286,10 +299,9 @@ impl StakeBurningManager {
             0x6a, // OP_RETURN
             0x20, // Push 32 bytes
             // "RUSTY_GOVERNANCE_STAKE_BURN" as bytes
-            0x52, 0x55, 0x53, 0x54, 0x59, 0x5f, 0x47, 0x4f,
-            0x56, 0x45, 0x52, 0x4e, 0x41, 0x4e, 0x43, 0x45,
-            0x5f, 0x53, 0x54, 0x41, 0x4b, 0x45, 0x5f, 0x42,
-            0x55, 0x52, 0x4e, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x52, 0x55, 0x53, 0x54, 0x59, 0x5f, 0x47, 0x4f, 0x56, 0x45, 0x52, 0x4e, 0x41, 0x4e,
+            0x43, 0x45, 0x5f, 0x53, 0x54, 0x41, 0x4b, 0x45, 0x5f, 0x42, 0x55, 0x52, 0x4e, 0x00,
+            0x00, 0x00, 0x00, 0x00,
         ];
 
         TxOutput {
@@ -303,7 +315,9 @@ impl StakeBurningManager {
     fn get_burn_percentage(&self, reason: &StakeBurningReason) -> f64 {
         match reason {
             StakeBurningReason::ProposalRejected => self.config.rejection_burn_percentage,
-            StakeBurningReason::InsufficientParticipation => self.config.participation_burn_percentage,
+            StakeBurningReason::InsufficientParticipation => {
+                self.config.participation_burn_percentage
+            }
             StakeBurningReason::MaliciousProposal => self.config.malicious_burn_percentage,
             StakeBurningReason::InsufficientDocumentation => self.config.rejection_burn_percentage,
             StakeBurningReason::ProtocolViolation => self.config.violation_burn_percentage,
@@ -314,7 +328,7 @@ impl StakeBurningManager {
     /// Check if a proposal is malicious
     fn is_malicious_proposal(&self, proposal: &GovernanceProposal) -> bool {
         // Simplified malicious detection - in reality this would be more sophisticated
-        
+
         // Check for obviously malicious content
         if proposal.title.contains("hack") || proposal.title.contains("exploit") {
             return true;
@@ -343,7 +357,9 @@ impl StakeBurningManager {
         }
 
         // Check for duplicate proposals (simplified)
-        let similar_proposals = self.executed_burns.values()
+        let similar_proposals = self
+            .executed_burns
+            .values()
             .filter(|burn| {
                 // Very basic similarity check
                 burn.proposal_id != proposal.proposal_id
@@ -362,7 +378,8 @@ impl StakeBurningManager {
 
         // Check if voting period is too short or too long
         let voting_period = proposal.end_block_height - proposal.start_block_height;
-        if voting_period < 1000 || voting_period > 100000 { // ~2.5 days to ~250 days
+        if voting_period < 1000 || voting_period > 100000 {
+            // ~2.5 days to ~250 days
             return true;
         }
 
@@ -377,12 +394,16 @@ impl StakeBurningManager {
         }
 
         // For protocol upgrades, code change hash should be provided
-        if proposal.proposal_type == ProposalType::ProtocolUpgrade && proposal.code_change_hash.is_none() {
+        if proposal.proposal_type == ProposalType::ProtocolUpgrade
+            && proposal.code_change_hash.is_none()
+        {
             return true;
         }
 
         // For parameter changes, target parameter should be specified
-        if proposal.proposal_type == ProposalType::ParameterChange && proposal.target_parameter.is_none() {
+        if proposal.proposal_type == ProposalType::ParameterChange
+            && proposal.target_parameter.is_none()
+        {
             return true;
         }
 
@@ -402,11 +423,15 @@ impl StakeBurningManager {
 
     /// Get statistics about stake burning
     pub fn get_burn_statistics(&self) -> StakeBurnStatistics {
-        let total_burned = self.executed_burns.values()
+        let total_burned = self
+            .executed_burns
+            .values()
             .map(|burn| burn.burn_amount)
             .sum();
 
-        let burns_by_reason = self.executed_burns.values()
+        let burns_by_reason = self
+            .executed_burns
+            .values()
             .fold(HashMap::new(), |mut acc, burn| {
                 *acc.entry(burn.reason.clone()).or_insert(0) += burn.burn_amount;
                 acc

@@ -1,18 +1,21 @@
 //! Masternode quorum formation with deterministic selection algorithms
-//! 
+//!
 //! This module implements deterministic quorum formation for various masternode services
 //! including OxideSend, FerrousShield, governance, and PoSe challenges.
 
-use std::collections::{HashMap, HashSet};
-use log::{info, warn, error, debug};
-use rand::{SeedableRng, Rng};
-use rand_chacha::ChaCha8Rng;
 use blake3;
 use hex;
+use log::{debug, info};
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use std::collections::HashMap;
 
-use rusty_shared_types::masternode::{MasternodeList, MasternodeEntry, MasternodeID, MasternodeStatus};
-use rusty_shared_types::dkg::{DKGSession, DKGSessionID, DKGParticipant, DKGParams};
-use rusty_shared_types::Hash;
+use rusty_shared_types::masternode::MasternodeID;
+use rusty_shared_types::{
+    dkg::{DKGParams, DKGParticipant, DKGSession, DKGSessionID},
+    masternode::{MasternodeEntry, MasternodeList, MasternodeStatus},
+    Hash,
+};
 
 /// Configuration for quorum formation
 #[derive(Debug, Clone)]
@@ -48,7 +51,7 @@ impl Default for QuorumConfig {
 }
 
 /// Types of quorums that can be formed
-#[derive(Debug, Clone, PartialEq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum QuorumType {
     OxideSend,
     FerrousShield,
@@ -63,7 +66,7 @@ pub enum QuorumType {
 pub struct FormedQuorum {
     pub quorum_type: QuorumType,
     pub quorum_id: Hash,
-    pub members: Vec<MasternodeID>,
+    pub members: Vec<rusty_shared_types::masternode::MasternodeID>,
     pub threshold: u32,
     pub creation_block_height: u64,
     pub creation_block_hash: Hash,
@@ -75,11 +78,11 @@ pub struct FormedQuorum {
 /// Masternode scoring criteria for quorum selection
 #[derive(Debug, Clone)]
 pub struct MasternodeScore {
-    pub masternode_id: MasternodeID,
+    pub masternode_id: rusty_shared_types::masternode::MasternodeID,
     pub uptime_score: f32,        // Based on PoSe success rate
     pub dkg_score: f32,           // Based on DKG participation success
-    pub participation_score: f32,  // Based on recent quorum participation
-    pub reputation_score: f32,     // Overall reputation
+    pub participation_score: f32, // Based on recent quorum participation
+    pub reputation_score: f32,    // Overall reputation
     pub total_score: f32,
 }
 
@@ -87,16 +90,14 @@ pub struct MasternodeScore {
 pub struct QuorumFormationManager {
     config: QuorumConfig,
     active_quorums: HashMap<Hash, FormedQuorum>,
-    masternode_participation_history: HashMap<MasternodeID, Vec<QuorumParticipation>>,
+    masternode_participation_history:
+        HashMap<rusty_shared_types::masternode::MasternodeID, Vec<QuorumParticipation>>,
 }
 
 /// Record of masternode participation in quorums
 #[derive(Debug, Clone)]
 struct QuorumParticipation {
-    quorum_id: Hash,
     quorum_type: QuorumType,
-    block_height: u64,
-    performance_score: f32,
 }
 
 impl QuorumFormationManager {
@@ -116,25 +117,32 @@ impl QuorumFormationManager {
         masternode_list: &MasternodeList,
         block_height: u64,
         block_hash: &Hash,
-        additional_criteria: Option<Box<dyn Fn(&MasternodeEntry) -> bool>>,
+        additional_criteria: Option<Box<dyn Fn(&MasternodeEntry) -> bool + '_>>,
     ) -> Result<FormedQuorum, String> {
         // Check if we have enough active masternodes
         let active_masternodes = self.get_active_masternodes(masternode_list);
         if active_masternodes.len() < self.config.min_active_masternodes {
-            return Err(format!("Insufficient active masternodes: {} < {}", 
-                              active_masternodes.len(), self.config.min_active_masternodes));
+            return Err(format!(
+                "Insufficient active masternodes: {} < {}",
+                active_masternodes.len(),
+                self.config.min_active_masternodes
+            ));
         }
 
         // Get quorum size for this type
         let quorum_size = self.get_quorum_size(&quorum_type);
         if active_masternodes.len() < quorum_size {
-            return Err(format!("Insufficient masternodes for {} quorum: {} < {}", 
-                              self.quorum_type_name(&quorum_type), active_masternodes.len(), quorum_size));
+            return Err(format!(
+                "Insufficient masternodes for {} quorum: {} < {}",
+                self.quorum_type_name(&quorum_type),
+                active_masternodes.len(),
+                quorum_size
+            ));
         }
 
         // Score and filter masternodes
-        let mut scored_masternodes = self.score_masternodes(&active_masternodes, &quorum_type);
-        
+        let mut scored_masternodes = self.score_masternodes(&active_masternodes, &quorum_type, masternode_list);
+
         // Apply additional criteria if provided
         if let Some(criteria) = additional_criteria {
             scored_masternodes.retain(|score| {
@@ -150,8 +158,10 @@ impl QuorumFormationManager {
         scored_masternodes.retain(|score| score.total_score >= self.config.min_masternode_score);
 
         if scored_masternodes.len() < quorum_size {
-            return Err(format!("Insufficient qualified masternodes for {} quorum after filtering", 
-                              self.quorum_type_name(&quorum_type)));
+            return Err(format!(
+                "Insufficient qualified masternodes for {} quorum after filtering",
+                self.quorum_type_name(&quorum_type)
+            ));
         }
 
         // Deterministic selection using DPRF
@@ -176,6 +186,7 @@ impl QuorumFormationManager {
                 threshold,
                 block_height,
                 &quorum_id,
+                masternode_list,
             )?)
         } else {
             None
@@ -196,23 +207,31 @@ impl QuorumFormationManager {
             selection_seed: self.generate_selection_seed(&quorum_type, block_height, block_hash),
         };
 
-        // Record participation
+        // Record participation (using references to avoid cloning the quorum)
         for mn_id in &selected_masternodes {
             self.record_participation(mn_id.clone(), &quorum);
         }
 
-        // Store active quorum
+        // Store active quorum (clone is necessary here as we need to return the quorum)
         self.active_quorums.insert(quorum_id, quorum.clone());
 
-        info!("Formed {} quorum with {} members at height {}", 
-              self.quorum_type_name(&quorum_type), selected_masternodes.len(), block_height);
+        info!(
+            "Formed {} quorum with {} members at height {}",
+            self.quorum_type_name(&quorum_type),
+            selected_masternodes.len(),
+            block_height
+        );
 
         Ok(quorum)
     }
 
     /// Get active masternodes from the masternode list
-    fn get_active_masternodes(&self, masternode_list: &MasternodeList) -> Vec<MasternodeID> {
-        masternode_list.map
+    fn get_active_masternodes(
+        &self,
+        masternode_list: &MasternodeList,
+    ) -> Vec<rusty_shared_types::masternode::MasternodeID> {
+        masternode_list
+            .map
             .iter()
             .filter(|(_, entry)| entry.status == MasternodeStatus::Active)
             .map(|(id, _)| id.clone())
@@ -220,37 +239,60 @@ impl QuorumFormationManager {
     }
 
     /// Score masternodes for quorum selection
-    fn score_masternodes(&self, masternodes: &[MasternodeID], quorum_type: &QuorumType) -> Vec<MasternodeScore> {
-        masternodes.iter().map(|mn_id| {
-            let participation_history = self.masternode_participation_history.get(mn_id).cloned().unwrap_or_default();
-            
-            // Calculate uptime score (placeholder - would use PoSe data)
-            let uptime_score = 0.95; // Default high score
-            
-            // Calculate DKG score (placeholder - would use actual DKG performance)
-            let dkg_score = 0.90; // Default high score
-            
-            // Calculate participation score (lower is better for load balancing)
-            let recent_participations = participation_history.iter()
-                .filter(|p| p.quorum_type == *quorum_type)
-                .count() as f32;
-            let participation_score = (1.0 / (1.0 + recent_participations * 0.1)).max(0.1);
-            
-            // Calculate reputation score (combination of factors)
-            let reputation_score = (uptime_score + dkg_score + participation_score) / 3.0;
-            
-            // Total score with weights
-            let total_score = uptime_score * 0.4 + dkg_score * 0.3 + participation_score * 0.2 + reputation_score * 0.1;
-            
-            MasternodeScore {
-                masternode_id: mn_id.clone(),
-                uptime_score,
-                dkg_score,
-                participation_score,
-                reputation_score,
-                total_score,
-            }
-        }).collect()
+    fn score_masternodes(
+        &self,
+        masternodes: &[rusty_shared_types::masternode::MasternodeID],
+        quorum_type: &QuorumType,
+        masternode_list: &MasternodeList,
+    ) -> Vec<MasternodeScore> {
+        masternodes
+            .iter()
+            .filter_map(|mn_id| {
+                // Get the masternode entry for real data
+                let mn_entry = masternode_list.map.get(mn_id)?;
+
+                // Get participation history without cloning if possible
+                let participation_history = self
+                    .masternode_participation_history
+                    .get(mn_id)
+                    .map(|hist| hist.as_slice())
+                    .unwrap_or(&[]);
+
+                // Calculate uptime score based on PoSe failure count
+                // Lower failure count = higher score
+                // Max failures considered: 10, score decreases linearly
+                let max_failures = 10.0;
+                let uptime_score = (1.0 - (mn_entry.pose_failure_count as f32 / max_failures)).max(0.0);
+
+                // Calculate DKG score directly from success rate
+                let dkg_score = mn_entry.dkg_success_rate;
+
+                // Calculate participation score (lower is better for load balancing)
+                let recent_participations = participation_history
+                    .iter()
+                    .filter(|p| p.quorum_type == *quorum_type)
+                    .count() as f32;
+                let participation_score = (1.0 / (1.0 + recent_participations * 0.1)).max(0.1);
+
+                // Calculate reputation score (combination of factors)
+                let reputation_score = (uptime_score + dkg_score + participation_score) / 3.0;
+
+                // Total score with weights
+                let total_score = uptime_score * 0.4
+                    + dkg_score * 0.3
+                    + participation_score * 0.2
+                    + reputation_score * 0.1;
+
+                Some(MasternodeScore {
+                    masternode_id: mn_id.clone(),
+                    uptime_score,
+                    dkg_score,
+                    participation_score,
+                    reputation_score,
+                    total_score,
+                })
+            })
+            .collect()
     }
 
     /// Deterministic selection using pseudo-random function
@@ -261,108 +303,174 @@ impl QuorumFormationManager {
         quorum_type: &QuorumType,
         block_height: u64,
         block_hash: &Hash,
-    ) -> Result<Vec<MasternodeID>, String> {
-        // Create deterministic seed
+    ) -> Result<Vec<rusty_shared_types::masternode::MasternodeID>, String> {
+        if scored_masternodes.is_empty() {
+            return Err("No masternodes available for selection".to_string());
+        }
+
+        // Ensure we have enough masternodes to form a quorum
+        if scored_masternodes.len() < quorum_size {
+            return Err(format!(
+                "Not enough masternodes ({} available, {} needed)",
+                scored_masternodes.len(),
+                quorum_size
+            ));
+        }
+
         let seed = self.generate_selection_seed(quorum_type, block_height, block_hash);
-        let mut rng = ChaCha8Rng::from_seed(*seed.as_bytes());
+        // Convert Hash to [u8; 32] for the seed
+        let seed_bytes: [u8; 32] = seed
+            .as_slice()
+            .try_into()
+            .map_err(|_| "Failed to convert seed to [u8; 32]")?;
+        let mut rng = ChaCha8Rng::from_seed(seed_bytes);
 
-        // Sort masternodes by score (descending) for deterministic ordering
-        let mut sorted_masternodes = scored_masternodes.to_vec();
-        sorted_masternodes.sort_by(|a, b| b.total_score.partial_cmp(&a.total_score).unwrap_or(std::cmp::Ordering::Equal));
+        // Simple weighted random selection based on scores
+        let total_score: f32 = scored_masternodes.iter().map(|s| s.total_score).sum();
+        if total_score <= 0.0 {
+            return Err("No valid masternodes with positive scores".to_string());
+        }
 
-        // Use weighted random selection based on scores
-        let mut selected = Vec::new();
-        let mut available = sorted_masternodes;
+        let mut selected = Vec::with_capacity(quorum_size);
+        let mut available: Vec<_> = scored_masternodes.iter().collect();
 
-        for _ in 0..quorum_size {
-            if available.is_empty() {
-                break;
-            }
+        while selected.len() < quorum_size && !available.is_empty() {
+            let random_value: f32 = rng.gen_range(0.0..total_score);
+            let mut cumulative = 0.0;
 
-            // Calculate total weight
-            let total_weight: f32 = available.iter().map(|mn| mn.total_score).sum();
-            
-            // Select based on weighted probability
-            let mut random_weight = rng.gen::<f32>() * total_weight;
-            let mut selected_index = 0;
-            
             for (i, mn) in available.iter().enumerate() {
-                random_weight -= mn.total_score;
-                if random_weight <= 0.0 {
-                    selected_index = i;
+                cumulative += mn.total_score;
+                if random_value <= cumulative || i == available.len() - 1 {
+                    let selected_id = mn.masternode_id.clone();
+                    selected.push(selected_id);
+                    available.remove(i);
                     break;
                 }
             }
-
-            let selected_mn = available.remove(selected_index);
-            selected.push(selected_mn.masternode_id);
-        }
-
-        if selected.len() < quorum_size {
-            return Err(format!("Could not select enough masternodes: {} < {}", selected.len(), quorum_size));
         }
 
         Ok(selected)
     }
 
     /// Generate deterministic seed for selection
-    fn generate_selection_seed(&self, quorum_type: &QuorumType, block_height: u64, block_hash: &Hash) -> Hash {
-        let mut seed_data = Vec::new();
-        seed_data.extend_from_slice(&block_height.to_le_bytes());
-        seed_data.extend_from_slice(block_hash);
-        seed_data.extend_from_slice(self.quorum_type_name(quorum_type).as_bytes());
-        seed_data.extend_from_slice(b"QUORUM_SELECTION_SEED");
-        blake3::hash(&seed_data).into()
-    }
-
-    /// Generate quorum ID
-    fn generate_quorum_id(&self, members: &[MasternodeID], quorum_type: &QuorumType, block_hash: &Hash) -> Hash {
-        let mut id_data = Vec::new();
-        for member in members {
-            id_data.extend_from_slice(&member.0);
-        }
-        id_data.extend_from_slice(self.quorum_type_name(quorum_type).as_bytes());
-        id_data.extend_from_slice(block_hash);
-        blake3::hash(&id_data).into()
-    }
-
-    /// Create DKG session for the quorum
-    fn create_dkg_session(
+    fn generate_selection_seed(
         &self,
-        members: &[MasternodeID],
+        quorum_type: &QuorumType,
+        block_height: u64,
+        block_hash: &Hash,
+    ) -> Hash {
+        let mut hasher = blake3::Hasher::new();
+        // Convert quorum type to string and use its bytes
+        let type_str = match quorum_type {
+            QuorumType::OxideSend => "oxidesend",
+            QuorumType::FerrousShield => "ferrousshield",
+            QuorumType::Governance => "governance",
+            QuorumType::PoSeChallenger => "pose_challenger",
+            QuorumType::DKGParticipant => "dkg_participant",
+            QuorumType::Custom(s) => s.as_str(),
+        };
+        hasher.update(type_str.as_bytes());
+        hasher.update(&block_height.to_be_bytes());
+        // Convert Hash to bytes using as_ref() which is implemented for Hash
+        hasher.update(block_hash.as_ref());
+        let hash_result = hasher.finalize();
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(hash_result.as_bytes());
+        Hash::from(hash_bytes)
+    }
+
+    /// Create DKG session for the quorum using actual masternode operator public keys
+    ///
+    /// # Arguments
+    /// * `members` - List of masternode IDs to include in the DKG session
+    /// * `threshold` - Minimum number of participants needed for threshold signing
+    /// * `block_height` - Current block height for session timeout calculations
+    /// * `quorum_id` - Unique ID for this quorum
+    /// * `masternode_list` - Reference to the current masternode list to get operator public keys
+    ///
+    /// # Returns
+    /// A new DKGSession if successful, or an error string if any masternode is not found or missing required keys
+    pub fn create_dkg_session(
+        &self,
+        members: &[rusty_shared_types::masternode::MasternodeID],
         threshold: u32,
         block_height: u64,
         quorum_id: &Hash,
+        masternode_list: &MasternodeList,
     ) -> Result<DKGSession, String> {
+        // Verify we have enough participants
+        if (members.len() as u32) < threshold {
+            return Err(format!(
+                "Insufficient participants: {} < {}",
+                members.len(),
+                threshold
+            ));
+        }
+
+        // Prepare DKG parameters according to protocol specs
+        // Create DKG parameters with defaults from DKGParams::default()
+        let mut params = DKGParams::default();
+        // Override specific parameters as needed
+        params.min_participants = threshold;
+        params.max_participants = members.len() as u32;
+
+        // Convert MasternodeIDs to DKG participants with their actual operator public keys
         let participants: Vec<DKGParticipant> = members
             .iter()
             .enumerate()
-            .map(|(index, mn_id)| DKGParticipant {
-                masternode_id: mn_id.clone(),
-                participant_index: index as u32,
-                public_key: vec![0u8; 32], // TODO: Get actual public key
-            })
-            .collect();
+            .map(
+                |(i, id): (usize, &rusty_shared_types::masternode::MasternodeID)| {
+                    // Look up the masternode in the masternode list
+                    let mn_entry = masternode_list
+                        .map
+                        .get(&id)
+                        .ok_or_else(|| format!("Masternode not found: {:?}", id))?;
 
-        let dkg_session_id = DKGSessionID(*quorum_id);
-        let dkg_params = DKGParams::default();
+                    // Get the operator public key as bytes
+                    let operator_key = mn_entry.identity.operator_public_key.to_vec();
+                    if operator_key.is_empty() {
+                        return Err(format!("Masternode {:?} has no operator public key", id));
+                    }
 
+                    Ok(DKGParticipant {
+                        masternode_id: rusty_shared_types::MasternodeID(id.0.clone()),
+                        participant_index: i as u32,
+                        public_key: operator_key,
+                    })
+                },
+            )
+            .collect::<Result<Vec<_>, _>>()?;
+
+        // Create a new DKG session
+        let session_id = {
+            let mut hasher = blake3::Hasher::new();
+            hasher.update(quorum_id.as_ref());
+            hasher.update(&block_height.to_be_bytes());
+            let hash_result = hasher.finalize();
+            let mut hash_bytes = [0u8; 32];
+            hash_bytes.copy_from_slice(hash_result.as_bytes());
+            DKGSessionID(Hash::from(hash_bytes))
+        };
+
+        // Create the DKG session with all required parameters
+        // Pass params by reference as expected by the DKGSession::new signature
         Ok(DKGSession::new(
-            dkg_session_id,
+            session_id,
             participants,
             threshold,
             block_height,
-            &dkg_params,
+            &params, // Pass by reference
         ))
     }
 
     /// Record masternode participation in a quorum
-    fn record_participation(&mut self, mn_id: MasternodeID, quorum: &FormedQuorum) {
+    fn record_participation(
+        &mut self,
+        mn_id: rusty_shared_types::masternode::MasternodeID,
+        quorum: &FormedQuorum,
+    ) {
         let participation = QuorumParticipation {
-            quorum_id: quorum.quorum_id,
             quorum_type: quorum.quorum_type.clone(),
-            block_height: quorum.creation_block_height,
-            performance_score: 1.0, // Default score, would be updated based on actual performance
         };
 
         self.masternode_participation_history
@@ -379,7 +487,7 @@ impl QuorumFormationManager {
             QuorumType::Governance => self.config.governance_quorum_size,
             QuorumType::PoSeChallenger => self.config.pose_challenger_count,
             QuorumType::DKGParticipant => self.config.oxidesend_quorum_size, // Default to OxideSend size
-            QuorumType::Custom(_) => self.config.oxidesend_quorum_size, // Default size
+            QuorumType::Custom(_) => self.config.oxidesend_quorum_size,      // Default size
         }
     }
 
@@ -391,31 +499,68 @@ impl QuorumFormationManager {
 
     /// Check if quorum type requires DKG
     fn requires_dkg(&self, quorum_type: &QuorumType) -> bool {
-        matches!(quorum_type, QuorumType::OxideSend | QuorumType::FerrousShield | QuorumType::DKGParticipant)
+        matches!(
+            quorum_type,
+            QuorumType::OxideSend | QuorumType::FerrousShield | QuorumType::DKGParticipant
+        )
     }
 
     /// Get quorum duration in blocks
     fn get_quorum_duration(&self, quorum_type: &QuorumType) -> u64 {
         match quorum_type {
-            QuorumType::OxideSend => 100,        // ~4 hours
-            QuorumType::FerrousShield => 200,    // ~8 hours
-            QuorumType::Governance => 1000,      // ~2.5 days
-            QuorumType::PoSeChallenger => 60,    // ~2.5 hours
-            QuorumType::DKGParticipant => 50,    // ~2 hours
-            QuorumType::Custom(_) => 100,        // Default duration
+            QuorumType::OxideSend => 100,     // ~4 hours
+            QuorumType::FerrousShield => 200, // ~8 hours
+            QuorumType::Governance => 1000,   // ~2.5 days
+            QuorumType::PoSeChallenger => 60, // ~2.5 hours
+            QuorumType::DKGParticipant => 50, // ~2 hours
+            QuorumType::Custom(_) => 100,     // Default duration
         }
     }
 
     /// Get human-readable name for quorum type
-    fn quorum_type_name(&self, quorum_type: &QuorumType) -> &str {
+    fn quorum_type_name(&self, quorum_type: &QuorumType) -> &'static str {
         match quorum_type {
             QuorumType::OxideSend => "OxideSend",
             QuorumType::FerrousShield => "FerrousShield",
             QuorumType::Governance => "Governance",
             QuorumType::PoSeChallenger => "PoSeChallenger",
             QuorumType::DKGParticipant => "DKGParticipant",
-            QuorumType::Custom(name) => name,
+            QuorumType::Custom(_) => "Custom",
         }
+    }
+
+    /// Generate a unique quorum ID based on the members, type, and block hash
+    fn generate_quorum_id(
+        &self,
+        members: &[MasternodeID],
+        quorum_type: &QuorumType,
+        block_hash: &Hash,
+    ) -> Hash {
+        let mut hasher = blake3::Hasher::new();
+
+        // Include quorum type in the hash
+        let type_str = self.quorum_type_name(quorum_type);
+        hasher.update(type_str.as_bytes());
+
+        // Include all member IDs in the hash
+        for member in members {
+            // Convert MasternodeID to bytes in a deterministic way
+            let txid_bytes = member.0.txid.as_ref();
+            let vout_bytes = member.0.vout.to_be_bytes();
+            hasher.update(txid_bytes);
+            hasher.update(&vout_bytes);
+        }
+
+        // Include block hash in the hash
+        hasher.update(block_hash.as_ref());
+
+        // Finalize the hash
+        let hash_result = hasher.finalize();
+
+        // Convert the hash to our Hash type
+        let mut hash_bytes = [0u8; 32];
+        hash_bytes.copy_from_slice(hash_result.as_bytes());
+        Hash::from(hash_bytes)
     }
 
     /// Get active quorum by ID
@@ -425,14 +570,16 @@ impl QuorumFormationManager {
 
     /// Get all active quorums of a specific type
     pub fn get_quorums_by_type(&self, quorum_type: &QuorumType) -> Vec<&FormedQuorum> {
-        self.active_quorums.values()
+        self.active_quorums
+            .values()
             .filter(|quorum| quorum.quorum_type == *quorum_type)
             .collect()
     }
 
     /// Clean up expired quorums
     pub fn cleanup_expired_quorums(&mut self, current_block_height: u64) {
-        let expired_quorums: Vec<Hash> = self.active_quorums
+        let expired_quorums: Vec<Hash> = self
+            .active_quorums
             .iter()
             .filter(|(_, quorum)| current_block_height > quorum.expiration_block_height)
             .map(|(id, _)| *id)
@@ -447,11 +594,13 @@ impl QuorumFormationManager {
     /// Get statistics about quorum formation
     pub fn get_formation_stats(&self) -> QuorumFormationStats {
         let total_active_quorums = self.active_quorums.len();
-        let quorums_by_type = self.active_quorums.values()
-            .fold(HashMap::new(), |mut acc, quorum| {
-                *acc.entry(quorum.quorum_type.clone()).or_insert(0) += 1;
-                acc
-            });
+        let quorums_by_type =
+            self.active_quorums
+                .values()
+                .fold(HashMap::new(), |mut acc, quorum| {
+                    *acc.entry(quorum.quorum_type.clone()).or_insert(0) += 1;
+                    acc
+                });
 
         QuorumFormationStats {
             total_active_quorums,

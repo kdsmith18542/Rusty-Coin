@@ -1,7 +1,8 @@
 //! Data structures for Rusty Coin's on-chain governance (Homestead Accord).
 
-use serde::{Serialize, Deserialize};
 use crate::{Hash, PublicKey, TransactionSignature};
+use bincode;
+use serde::{Deserialize, Serialize};
 
 /// Enumerates the types of governance proposals.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -59,9 +60,57 @@ pub struct GovernanceProposal {
 }
 
 impl GovernanceProposal {
-    /// Calculate the hash of the proposal
+    /// Returns the canonical byte representation of the proposal (excluding signature/id fields).
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+        #[derive(Serialize)]
+        struct ProposalPayload<'a> {
+            proposer_address: &'a [u8; 32],
+            proposal_type: &'a ProposalType,
+            start_block_height: u64,
+            end_block_height: u64,
+            title: &'a str,
+            description_hash: &'a Hash,
+            code_change_hash: &'a Option<Hash>,
+            target_parameter: &'a Option<String>,
+            new_value: &'a Option<String>,
+            bug_description: &'a Option<String>,
+            recipient_address: &'a Option<PublicKey>,
+            amount: &'a Option<u64>,
+            project_description: &'a Option<String>,
+            inputs: &'a [crate::TxInput],
+            outputs: &'a [crate::TxOutput],
+            lock_time: u32,
+            witness: &'a [Vec<u8>],
+            fee: u64,
+        }
+
+        let payload = ProposalPayload {
+            proposer_address: &self.proposer_address,
+            proposal_type: &self.proposal_type,
+            start_block_height: self.start_block_height,
+            end_block_height: self.end_block_height,
+            title: &self.title,
+            description_hash: &self.description_hash,
+            code_change_hash: &self.code_change_hash,
+            target_parameter: &self.target_parameter,
+            new_value: &self.new_value,
+            bug_description: &self.bug_description,
+            recipient_address: &self.recipient_address,
+            amount: &self.amount,
+            project_description: &self.project_description,
+            inputs: &self.inputs,
+            outputs: &self.outputs,
+            lock_time: self.lock_time,
+            witness: &self.witness,
+            fee: self.fee,
+        };
+
+        bincode::serialize(&payload)
+    }
+
+    /// Calculate the hash of the proposal for ID purposes (excludes signature/id).
     pub fn hash(&self) -> Hash {
-        match bincode::serialize(self) {
+        match self.canonical_bytes() {
             Ok(bytes) => blake3::hash(&bytes).into(),
             Err(_) => [0u8; 32], // Should never happen for valid proposals
         }
@@ -124,4 +173,21 @@ pub struct GovernanceVote {
     pub lock_time: u32,
     pub witness: Vec<Vec<u8>>,
     pub fee: u64,
-} 
+}
+
+impl GovernanceVote {
+    /// Returns the canonical byte representation of the vote (excluding signature).
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, Box<bincode::ErrorKind>> {
+        bincode::serialize(&(
+            self.proposal_id,
+            &self.voter_type,
+            self.voter_id,
+            &self.vote_choice,
+            &self.inputs,
+            &self.outputs,
+            self.lock_time,
+            &self.witness,
+            self.fee,
+        ))
+    }
+}

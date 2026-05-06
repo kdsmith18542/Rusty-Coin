@@ -1,15 +1,14 @@
 //! DKG network message types for Rusty Coin masternode coordination
 
-use serde::{Serialize, Deserialize};
-use crate::{Hash, MasternodeID};
 use crate::dkg::{
-    DKGSessionID, DKGCommitment, DKGSecretShare, DKGComplaint, DKGJustification,
-    SignatureShare, ThresholdSignatureRequest
+    DKGCommitment, DKGComplaint, DKGJustification, DKGSecretShare, DKGSessionID, SignatureShare,
+    ThresholdSignatureRequest,
 };
-
+use crate::{Hash, MasternodeID};
+use serde::{Deserialize, Serialize};
 
 /// Network message types for DKG protocol coordination
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DKGMessage {
     /// Request to initiate a new DKG session
     InitiateDKG(DKGInitiateRequest),
@@ -34,7 +33,7 @@ pub enum DKGMessage {
 }
 
 /// Request to initiate a new DKG session
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGInitiateRequest {
     pub session_id: DKGSessionID,
     pub initiator: MasternodeID,
@@ -46,17 +45,17 @@ pub struct DKGInitiateRequest {
 }
 
 /// Response to DKG initiation
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGInitiateResponse {
     pub session_id: DKGSessionID,
     pub responder: MasternodeID,
     pub accepted: bool,
     pub reason: Option<String>, // Reason for rejection if not accepted
-    pub signature: Vec<u8>, // Ed25519 signature by responder
+    pub signature: Vec<u8>,     // Ed25519 signature by responder
 }
 
 /// Purpose of the DKG session
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DKGPurpose {
     OxideSendQuorum,
     FerrousShieldCoordination,
@@ -66,7 +65,7 @@ pub enum DKGPurpose {
 }
 
 /// Commitment phase message
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGCommitmentMessage {
     pub session_id: DKGSessionID,
     pub commitment: DKGCommitment,
@@ -76,7 +75,7 @@ pub struct DKGCommitmentMessage {
 }
 
 /// Secret share distribution message
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGShareMessage {
     pub session_id: DKGSessionID,
     pub shares: Vec<DKGSecretShare>, // Encrypted shares for multiple recipients
@@ -86,7 +85,7 @@ pub struct DKGShareMessage {
 }
 
 /// Complaint message
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGComplaintMessage {
     pub session_id: DKGSessionID,
     pub complaint: DKGComplaint,
@@ -96,7 +95,7 @@ pub struct DKGComplaintMessage {
 }
 
 /// Justification message
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGJustificationMessage {
     pub session_id: DKGSessionID,
     pub justification: DKGJustification,
@@ -106,7 +105,7 @@ pub struct DKGJustificationMessage {
 }
 
 /// DKG completion announcement
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DKGCompleteMessage {
     pub session_id: DKGSessionID,
     pub group_public_key: Vec<u8>, // Serialized threshold public key
@@ -118,7 +117,7 @@ pub struct DKGCompleteMessage {
 }
 
 /// Request for threshold signature
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThresholdSignRequestMessage {
     pub session_id: DKGSessionID,
     pub request: ThresholdSignatureRequest,
@@ -128,7 +127,7 @@ pub struct ThresholdSignRequestMessage {
 }
 
 /// Signature share contribution
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SignatureShareMessage {
     pub session_id: DKGSessionID,
     pub signature_share: SignatureShare,
@@ -138,12 +137,12 @@ pub struct SignatureShareMessage {
 }
 
 /// Final aggregated threshold signature
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThresholdSignatureCompleteMessage {
     pub session_id: DKGSessionID,
     pub message_hash: Hash,
     pub aggregated_signature: Vec<u8>, // Final BLS threshold signature
-    pub signers: Vec<u32>, // Participant indices who contributed
+    pub signers: Vec<u32>,             // Participant indices who contributed
     pub sender: MasternodeID,
     pub timestamp: u64,
     pub signature: Vec<u8>, // Ed25519 signature by sender
