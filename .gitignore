@@ -1,7 +1,6 @@
 # Rust
 target/
 **/target/
-Cargo.lock
 
 # Test and benchmark results
 **/target/debug/
